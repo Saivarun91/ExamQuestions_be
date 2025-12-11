@@ -1,0 +1,31 @@
+question_text,question_type,options,correct_answers,marks,explanation
+What is the main characteristic of cloud computing?,MCQ,"A. Fixed resources,B. On-demand self-service,C. Manual configuration,D. Offline processing",B,1,Cloud computing allows users to access computing resources on demand without human interaction with each service provider.
+Which of the following is NOT a deployment model in cloud computing?,MCQ,"A. Private cloud,B. Public cloud,C. Distributed cloud,D. Closed cloud",D,1,"Private, Public, Hybrid, and Community are common deployment models; 'Closed cloud' is not one."
+Which service model provides virtual machines and storage?,MCQ,"A. SaaS,B. PaaS,C. IaaS,D. DBaaS",C,1,IaaS (Infrastructure as a Service) provides fundamental resources like VMs and storage.
+What is an example of SaaS?,MCQ,"A. Google Docs,B. Microsoft Azure,C. Amazon EC2,D. Kubernetes",A,1,Google Docs is SaaS because it's a software delivered via the web.
+Which company offers Microsoft Azure?,MCQ,"A. Google,B. Amazon,C. Microsoft,D. Oracle",C,1,Azure is Microsoft's cloud platform.
+Which component handles data storage in cloud computing?,MCQ,"A. Cloud Storage,B. Cloud Compute,C. Cloud Analytics,D. Cloud Gateway",A,1,Cloud storage stores user and application data online.
+Which of these is an example of IaaS?,MCQ,"A. AWS EC2,B. Dropbox,C. Salesforce,D. Google Docs",A,1,"AWS EC2 provides virtual machines, which is IaaS."
+What does PaaS stand for?,MCQ,"A. Platform as a Service,B. Processing as a System,C. Platform and Software,D. Program as a Service",A,1,"PaaS means Platform as a Service, offering a platform for developers to build and deploy applications."
+Which of these is a key benefit of cloud computing?,MCQ,"A. Inflexibility,B. High cost,C. Scalability,D. Hardware dependency",C,1,Cloud computing allows scaling resources up or down as needed.
+Which of the following is an open-source cloud platform?,MCQ,"A. AWS,B. OpenStack,C. Azure,D. Google Cloud",B,1,OpenStack is an open-source cloud computing platform.
+Which of these is a deployment model of cloud computing?,MCQ,"A. Shared cloud,B. Hybrid cloud,C. Joint cloud,D. Combined cloud",B,1,Hybrid cloud combines private and public cloud services.
+Which protocol is used for secure data transfer in the cloud?,MCQ,"A. FTP,B. HTTP,C. HTTPS,D. POP3",C,1,HTTPS provides encrypted communication over the internet.
+Which of these is a cloud storage service?,MCQ,"A. Amazon S3,B. AWS Lambda,C. Azure Compute,D. Google App Engine",A,1,Amazon S3 provides scalable object storage for cloud users.
+Which AWS service is used for serverless computing?,MCQ,"A. EC2,B. S3,C. Lambda,D. CloudWatch",C,1,AWS Lambda lets you run code without provisioning servers.
+What is the main purpose of virtualization in cloud computing?,MCQ,"A. Increase power consumption,B. Reduce performance,C. Create multiple virtual machines,D. Limit users",C,1,Virtualization enables multiple virtual machines to run on a single physical system.
+Which of these is NOT a benefit of cloud computing?,MCQ,"A. Cost efficiency,B. Limited scalability,C. Reliability,D. Accessibility",B,1,"Cloud computing provides scalability, not limitations."
+Which of the following best describes edge computing?,MCQ,"A. Computing close to data sources,B. Cloud storage system,C. Network protocol,D. Data center security model",A,1,Edge computing processes data near its source for faster response times.
+Which of the following is an example of cloud-based collaboration software?,MCQ,"A. Zoom,B. Oracle DB,C. Visual Studio Code,D. Windows OS",A,1,Zoom enables online collaboration through the cloud.
+Which technology enables virtualization in the cloud?,MCQ,"A. Hypervisor,B. Dockerfile,C. API Gateway,D. VPN",A,1,A hypervisor allows multiple operating systems to share a host machine.
+Which Google service provides cloud infrastructure?,MCQ,"A. Gmail,B. Google Drive,C. Google Cloud Platform,D. YouTube",C,1,GCP provides infrastructure and services for developers and enterprises.
+What is multi-tenancy in cloud computing?,MCQ,"A. Multiple users share the same resources securely,B. Each user has their own server,C. Users install local copies of software,D. Servers are dedicated per user",A,1,Multi-tenancy allows multiple users to share resources while keeping data isolated.
+Which cloud model gives most control to the user?,MCQ,"A. SaaS,B. PaaS,C. IaaS,D. FaaS",C,1,IaaS gives users control over infrastructure while the provider manages hardware.
+Which of these is a cloud monitoring service?,MCQ,"A. AWS CloudWatch,B. Google Maps,C. Azure Active Directory,D. Salesforce",A,1,AWS CloudWatch monitors cloud resources and applications.
+Which of the following is a characteristic of public cloud?,MCQ,"A. Owned by a single organization,B. Shared infrastructure,C. On-premises control,D. No internet access",B,1,Public clouds use shared infrastructure accessible over the internet.
+What is elasticity in cloud computing?,MCQ,"A. Ability to stretch hardware,B. Ability to dynamically allocate resources as needed,C. Fixed capacity,D. Offline processing",B,1,Elasticity lets cloud systems adapt resources automatically to changing demands.
+Which tool is used for cloud resource orchestration?,MCQ,"A. Kubernetes,B. Excel,C. Photoshop,D. Notepad",A,1,Kubernetes manages and orchestrates containerized applications in the cloud.
+Which of these provides a private network over the internet?,MCQ,"A. LAN,B. VPN,C. DNS,D. FTP",B,1,VPN creates a secure private connection over the public internet.
+Which term describes using multiple cloud providers?,MCQ,"A. Multicloud,B. Hybrid cloud,C. Dual network,D. Twin cloud",A,1,Multicloud refers to using services from multiple cloud vendors.
+Which of these services manages API traffic in the cloud?,MCQ,"A. API Gateway,B. EC2,C. S3,D. Lambda",A,1,API Gateway manages and monitors API calls in cloud applications.
+Which of these refers to on-demand computing resources?,MCQ,"A. Cloud computing,B. Grid computing,C. Batch processing,D. Edge caching",A,1,Cloud computing provides on-demand access to computing resources over the internet.
