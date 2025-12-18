@@ -142,6 +142,7 @@ def admin_provider_create(request):
             name=data['name'],
             icon=data['icon'],
             slug=data.get('slug', ''),  # Will auto-generate if empty
+            logo_url=data.get('logo_url', ''),  # Cloudinary URL from frontend
             meta_title=data.get('meta_title', ''),
             meta_keywords=data.get('meta_keywords', ''),
             meta_description=data.get('meta_description', ''),
@@ -149,7 +150,7 @@ def admin_provider_create(request):
             is_active=is_active
         )
         
-        # Handle logo file upload
+        # Handle logo file upload (legacy support)
         logo_file = request.FILES.get('logo')
         if logo_file:
             provider.logo.put(logo_file, content_type=logo_file.content_type)
@@ -201,6 +202,12 @@ def admin_provider_update(request, provider_id):
             provider.icon = data['icon']
         if 'slug' in data:
             provider.slug = data['slug']
+        if 'logo_url' in data:
+            # If logo_url is empty string, clear it (remove logo)
+            if data['logo_url'] == '' or data['logo_url'] is None:
+                provider.logo_url = None
+            else:
+                provider.logo_url = data['logo_url']
         if 'meta_title' in data:
             provider.meta_title = data['meta_title']
         if 'meta_keywords' in data:
@@ -233,6 +240,8 @@ def admin_provider_update(request, provider_id):
             if provider.logo:
                 provider.logo.delete()
             provider.logo = None
+            # Also clear logo_url when removing logo
+            provider.logo_url = None
         
         # Handle logo file upload (only if not removing)
         if not remove_logo:

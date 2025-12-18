@@ -5,6 +5,7 @@ class ProviderSerializer(serializers.Serializer):
     name = serializers.CharField(required=True)
     icon = serializers.CharField(required=True)
     slug = serializers.CharField(required=False)
+    logo_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_keywords = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -13,9 +14,12 @@ class ProviderSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         """Convert ObjectId to string for JSON serialization"""
-        # Build logo URL if logo exists
+        # Use logo_url if available (Cloudinary URL), otherwise fall back to legacy file-based logo
         logo_url = None
-        if hasattr(instance, 'logo') and instance.logo:
+        if hasattr(instance, 'logo_url') and instance.logo_url:
+            logo_url = instance.logo_url
+        elif hasattr(instance, 'logo') and instance.logo:
+            # Legacy: Build logo URL from file if logo_url is not set
             request = self.context.get('request', None)
             if request:
                 logo_url = f"{request.scheme}://{request.get_host()}/api/providers/{str(instance.id)}/logo/"
@@ -45,6 +49,7 @@ class ProviderSerializer(serializers.Serializer):
         instance.name = validated_data.get("name", instance.name)
         instance.icon = validated_data.get("icon", instance.icon)
         instance.slug = validated_data.get("slug", instance.slug)
+        instance.logo_url = validated_data.get("logo_url", instance.logo_url)
         instance.meta_title = validated_data.get("meta_title", instance.meta_title)
         instance.meta_keywords = validated_data.get("meta_keywords", instance.meta_keywords)
         instance.meta_description = validated_data.get("meta_description", instance.meta_description)

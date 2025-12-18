@@ -56,36 +56,58 @@ class CourseSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         """Custom serialization to handle missing fields gracefully."""
-        # Handle provider - get provider.name if it's a ReferenceField
-        provider_value = getattr(instance, 'provider', None)
-        if provider_value:
-            # If it's a ReferenceField object, get the name attribute
-            if hasattr(provider_value, 'name'):
-                provider_value = provider_value.name
-            else:
-                provider_value = str(provider_value)
-        else:
+        # Handle provider - get provider.name and slug if it's a ReferenceField
+        provider_value = ''
+        provider_slug = None
+        try:
+            provider_ref = getattr(instance, 'provider', None)
+            if provider_ref:
+                # If it's a ReferenceField object, get the name and slug attributes
+                try:
+                    if hasattr(provider_ref, 'name'):
+                        provider_value = provider_ref.name
+                    else:
+                        provider_value = str(provider_ref)
+                    if hasattr(provider_ref, 'slug'):
+                        provider_slug = provider_ref.slug
+                except Exception:
+                    # Provider reference is broken/missing, set to empty string
+                    provider_value = ''
+                    provider_slug = None
+        except Exception:
+            # If accessing provider fails, set to empty string
             provider_value = ''
+            provider_slug = None
         
         # Handle category - get category.title and slug if it's a ReferenceField
-        category_value = getattr(instance, 'category', None)
+        category_value = None
         category_slug = None
-        if category_value:
-            # If it's a ReferenceField object, get the title and slug attributes
-            if hasattr(category_value, 'slug'):
-                category_slug = category_value.slug
-            if hasattr(category_value, 'title'):
-                category_value = category_value.title
-            elif hasattr(category_value, 'id'):
-                category_value = str(category_value.id)
-            else:
-                category_value = str(category_value)
-        else:
+        try:
+            category_ref = getattr(instance, 'category', None)
+            if category_ref:
+                # If it's a ReferenceField object, get the title and slug attributes
+                try:
+                    if hasattr(category_ref, 'slug'):
+                        category_slug = category_ref.slug
+                    if hasattr(category_ref, 'title'):
+                        category_value = category_ref.title
+                    elif hasattr(category_ref, 'id'):
+                        category_value = str(category_ref.id)
+                    else:
+                        category_value = str(category_ref)
+                except Exception:
+                    # Category reference is broken/missing, set to None
+                    category_value = None
+                    category_slug = None
+        except Exception:
+            # If accessing category fails, set to None
             category_value = None
+            category_slug = None
 
         return {
             'id': str(instance.id),
             'provider': provider_value,
+            'provider_slug': provider_slug,
             'title': getattr(instance, 'title', getattr(instance, 'name', '')),
             'code': getattr(instance, 'code', ''),
             'slug': getattr(instance, 'slug', ''),
@@ -94,6 +116,12 @@ class CourseSerializer(serializers.Serializer):
             'badge': getattr(instance, 'badge', None),
             'category': category_value,
             'category_slug': category_slug,
+            
+            # Pricing fields
+            'actual_price': getattr(instance, 'actual_price', 0.0),
+            'offer_price': getattr(instance, 'offer_price', 0.0),
+            'currency': getattr(instance, 'currency', 'INR'),
+            'is_featured': getattr(instance, 'is_featured', False),
             
             # Exam details fields
             'short_description': getattr(instance, 'short_description', None),

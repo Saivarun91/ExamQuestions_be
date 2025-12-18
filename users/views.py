@@ -24,6 +24,7 @@ from common.middleware import restrict
 import urllib.request
 import urllib.parse
 import json
+import requests
 
 
 # ================= JWT HELPER =================
@@ -37,29 +38,23 @@ def generate_jwt(payload):
 
 # ================= reCAPTCHA HELPER =================
 def verify_recaptcha(token):
-    """Verify reCAPTCHA token with Google's API."""
+    """
+    Verify reCAPTCHA token with Google's API.
+    Returns True if valid, False otherwise.
+    """
     if not token:
         return False
     
-    # Get secret key from settings
-    recaptcha_secret_key = getattr(settings, 'RECAPTCHA_SECRET_KEY', None)
-    if not recaptcha_secret_key:
-        # In development, you might want to skip verification
-        # In production, always verify
-        print("Warning: RECAPTCHA_SECRET_KEY not set. Skipping captcha verification.")
-        return True  # Allow registration if secret key is not configured
-    
-    # Verify with Google
-    url = 'https://www.google.com/recaptcha/api/siteverify'
-    data = urllib.parse.urlencode({
-        'secret': recaptcha_secret_key,
-        'response': token
-    }).encode('utf-8')
-    
     try:
-        req = urllib.request.Request(url, data=data)
-        response = urllib.request.urlopen(req, timeout=5)
-        result = json.loads(response.read().decode('utf-8'))
+        response = requests.post(
+            settings.RECAPTCHA_VERIFY_URL,
+            data={
+                'secret': settings.RECAPTCHA_SECRET_KEY,
+                'response': token
+            },
+            timeout=5
+        )
+        result = response.json()
         return result.get('success', False)
     except Exception as e:
         print(f"reCAPTCHA verification error: {e}")
@@ -75,23 +70,20 @@ def register_user(request):
         fullname = data.get("fullname", "").strip()
         password = data.get("password")
         phone_number = data.get("phone_number", "").strip()
-        captcha_token = data.get("captcha_token")
+        recaptcha_token = data.get("recaptcha_token")
+        
+        # Verify reCAPTCHA token
+        if not verify_recaptcha(recaptcha_token):
+            return Response(
+                {'error': 'reCAPTCHA verification failed. Please try again.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         if not email or not password:
             return Response(
                 {"error": "Email and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        # Verify reCAPTCHA (only if secret key is configured)
-        recaptcha_secret_key = getattr(settings, 'RECAPTCHA_SECRET_KEY', None)
-        if recaptcha_secret_key:
-            # Only verify if secret key is configured
-            if not verify_recaptcha(captcha_token):
-                return Response(
-                    {"error": "reCAPTCHA verification failed. Please try again."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
         
         if User.objects(email=email).first():
             return Response(

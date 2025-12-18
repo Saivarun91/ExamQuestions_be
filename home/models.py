@@ -81,6 +81,84 @@ class ValuePropositionsSection(Document):
     }
 
 
+class FeaturedExamsSection(Document):
+    heading = StringField(default="Featured Certification Exams")
+    subtitle = StringField(default="Explore our most popular certification exams")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "featured_exams_section",
+        "strict": False
+    }
+
+
+class PopularProvidersSection(Document):
+    heading = StringField(default="Popular Certification Providers")
+    subtitle = StringField(default="Trusted by professionals worldwide")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "popular_providers_section",
+        "strict": False
+    }
+
+
+class TestimonialsSection(Document):
+    heading = StringField(default="What Our Students Say")
+    subtitle = StringField(default="Real feedback from certified professionals")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "testimonials_section",
+        "strict": False
+    }
+
+
+class BlogPostsSection(Document):
+    heading = StringField(default="Latest Blog Posts")
+    subtitle = StringField(default="Stay updated with certification tips and news")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "blog_posts_section",
+        "strict": False
+    }
+
+
+class RecentlyUpdatedSection(Document):
+    heading = StringField(default="Recently Updated Exams")
+    subtitle = StringField(default="Stay current with the latest exam updates")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "recently_updated_section",
+        "strict": False
+    }
+
+
+class FAQsSection(Document):
+    heading = StringField(default="Frequently Asked Questions")
+    subtitle = StringField(default="Find answers to common questions")
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "faqs_section",
+        "strict": False
+    }
+
+
 # =================== VALUE PROPOSITIONS ===================
 class ValueProposition(Document):
     title = StringField(required=True)
@@ -240,3 +318,83 @@ class TopCategoriesSection(Document):
         "collection": "top_categories_section",
         "strict": False
     }
+
+
+# =================== HOME PAGE SEO ===================
+class HomePageSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+    
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "home_page_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Home Page SEO - {self.meta_title or 'Untitled'}"
+
+
+# =================== EXAM DETAILS SEO ===================
+class ExamDetailsSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+    
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "exam_details_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Exam Details SEO - {self.meta_title or 'Untitled'}"
+
+
+# =================== EXAMS PAGE SEO ===================
+class ExamsPageSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+    
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "exams_page_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Exams Page SEO - {self.meta_title or 'Untitled'}"
+
+
+# =================== PRICING PLANS SEO ===================
+class PricingPlansSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+    
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "pricing_plans_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Pricing Plans SEO - {self.meta_title or 'Untitled'}"

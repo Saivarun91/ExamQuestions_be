@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
+from .sitemap import sitemap_view
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -25,4 +26,5 @@ urlpatterns = [
     path("api/pricing/", include("pricing.urls")),
     # Catch-all pattern last
     path('api/', include('exams.urls')),
+    path("sitemap.xml", sitemap_view), 
 ]

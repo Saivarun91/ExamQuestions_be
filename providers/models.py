@@ -6,7 +6,8 @@ class Provider(Document):
     name = StringField(required=True, unique=True)
     icon = StringField(required=True)  # Cloud, Shield, Award, Database, Code, Building
     slug = StringField(required=True, unique=True)
-    logo = FileField(required=False)  # Optional logo image file
+    logo = FileField(required=False)  # Optional logo image file (legacy, kept for backward compatibility)
+    logo_url = StringField(required=False)  # Cloudinary URL for logo
     
     # SEO Fields
     meta_title = StringField()

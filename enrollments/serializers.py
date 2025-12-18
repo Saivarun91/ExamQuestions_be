@@ -126,10 +126,12 @@ class EnrollmentSerializer(serializers.Serializer):
                     "id": str(payment.id),
                     "razorpay_order_id": payment.razorpay_order_id,
                     "razorpay_payment_id": getattr(payment, "razorpay_payment_id", None) or "",
-                    "amount": payment.amount,
+                    "amount": payment.amount,  # This is the final amount after discount
                     "currency": payment.currency or "INR",
                     "status": payment.status or "pending",
-                    "paid_at": str(payment.paid_at) if hasattr(payment, "paid_at") and payment.paid_at else None
+                    "paid_at": str(payment.paid_at) if hasattr(payment, "paid_at") and payment.paid_at else None,
+                    "coupon_code": getattr(payment, "coupon_code", None) or None,
+                    "discount_amount": getattr(payment, "discount_amount", 0) or 0
                 }
             else:
                 data["payment"] = None

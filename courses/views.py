@@ -962,6 +962,7 @@ def course_update(request, course_id):
             from practice_tests.models import PracticeTest
             from django.utils.text import slugify
             import datetime
+            from pymongo.errors import DuplicateKeyError
             
             synced_tests = []
             for test_data in data['practice_tests_list']:
@@ -973,21 +974,39 @@ def course_update(request, course_id):
                     test_name = test_data.get('name', '')
                     base_slug = slugify(test_name)
                     
-                    # Try to find existing test by name for this course
-                    existing_test = PracticeTest.objects(title=test_name, course=course).first()
+                    # Try to find existing test by ID first (if provided), then by name AND course
+                    existing_test = None
+                    test_id = test_data.get('id')
+                    
+                    # If ID is provided and looks like a MongoDB ObjectId, try to find by ID
+                    if test_id and ObjectId.is_valid(str(test_id)):
+                        try:
+                            existing_test = PracticeTest.objects(id=ObjectId(test_id), course=course).first()
+                        except:
+                            pass  # If lookup fails, continue to name-based lookup
+                    
+                    # If not found by ID, try by name AND course (ensures course-specific lookup)
+                    if not existing_test:
+                        existing_test = PracticeTest.objects(title=test_name, course=course).first()
                     
                     if existing_test:
-                        # Update existing test
+                        # Update existing test for this course
                         practice_test = existing_test
+                        print(f"   📝 Updating existing test '{test_name}' for course '{course.title}'")
                     else:
-                        # Create new test with unique slug
+                        # Create new test with unique slug for this course
+                        # First try with simple slug (relying on composite index for uniqueness per course)
                         slug = base_slug
                         counter = 1
                         max_checks = 100
                         
-                        # Ensure slug is unique for this course
+                        # Ensure slug is unique for this specific course
                         while counter <= max_checks:
-                            if not PracticeTest.objects(slug=slug, course=course).first():
+                            existing_by_slug = PracticeTest.objects(slug=slug, course=course).first()
+                            if not existing_by_slug:
+                                # Also check if slug exists globally (in case of single-field index)
+                                # If it exists in another course, we can still use it (composite index allows this)
+                                # But if there's a single-field index issue, we'll handle it in the save retry
                                 break
                             slug = f"{base_slug}-{counter}"
                             counter += 1
@@ -1002,8 +1021,13 @@ def course_update(request, course_id):
                             course=course,
                             category=course.category if hasattr(course, 'category') and course.category else None
                         )
+                        print(f"   ✨ Creating new test '{test_name}' for course '{course.title}' (slug: {slug})")
                     
-                    # Update test fields
+                    # Update test fields (including title to ensure it matches the sent data)
+                    # Always update title with the value from the request
+                    if test_name:
+                        practice_test.title = test_name
+                    
                     # Parse duration string (e.g., "90 minutes" -> 90)
                     duration_str = str(test_data.get('duration', '0'))
                     duration_int = 0
@@ -1019,9 +1043,49 @@ def course_update(request, course_id):
                     practice_test.difficulty_level = test_data.get('difficulty', 'Intermediate')
                     practice_test.overview = test_data.get('description', '')
                     
-                    # Save the practice test
+                    # Save the practice test with retry logic for duplicate key errors
                     practice_test.updated_at = datetime.datetime.utcnow()
-                    practice_test.save()
+                    
+                    # Retry logic to handle any duplicate key errors (e.g., if single-field index exists on slug)
+                    max_retries = 3
+                    retry_count = 0
+                    saved = False
+                    
+                    while retry_count < max_retries and not saved:
+                        try:
+                            practice_test.save()
+                            saved = True
+                        except DuplicateKeyError as dke:
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                # Generate a new unique slug by including course identifier
+                                course_slug = slugify(course.slug) if course.slug else slugify(course.title)
+                                # Use a short course identifier (first few chars of course slug or course ID)
+                                course_id_short = str(course.id)[:8]  # Use first 8 chars of ObjectId
+                                practice_test.slug = f"{course_slug}-{base_slug}-{course_id_short}"
+                                print(f"   🔄 Retry {retry_count}: Generated course-specific slug due to duplicate key: {practice_test.slug}")
+                            else:
+                                # Last resort: use ObjectId for complete uniqueness
+                                practice_test.slug = f"{base_slug}-{ObjectId()}"
+                                print(f"   🔄 Final retry: Using ObjectId for slug: {practice_test.slug}")
+                                try:
+                                    practice_test.save()
+                                    saved = True
+                                except:
+                                    raise  # Re-raise if still fails
+                        except Exception as save_error:
+                            # Check if it's a duplicate key error (might be wrapped)
+                            if "duplicate key" in str(save_error).lower() or "E11000" in str(save_error):
+                                retry_count += 1
+                                if retry_count < max_retries:
+                                    # Generate a new unique slug by including course identifier
+                                    course_slug = slugify(course.slug) if course.slug else slugify(course.title)
+                                    course_id_short = str(course.id)[:8]
+                                    practice_test.slug = f"{course_slug}-{base_slug}-{course_id_short}"
+                                    print(f"   🔄 Retry {retry_count}: Generated course-specific slug: {practice_test.slug}")
+                                    continue
+                            # For other errors, re-raise immediately
+                            raise
                     
                     synced_tests.append({
                         'name': practice_test.title,
@@ -1031,6 +1095,8 @@ def course_update(request, course_id):
                     
                 except Exception as e:
                     print(f"   ⚠️  Error syncing test '{test_data.get('name')}': {str(e)}")
+                    import traceback
+                    traceback.print_exc()
                     # Continue with other tests even if one fails
                     continue
             
@@ -1141,14 +1207,19 @@ def featured_courses(request):
         
         # ✅ AUTO-SYNC: Ensure practice_exams count is accurate for each course
         for course in courses:
-            actual_count = PracticeTest.objects(course=course).count()
-            if course.practice_exams != actual_count:
-                course.practice_exams = actual_count
-                course.save()
+            try:
+                actual_count = PracticeTest.objects(course=course).count()
+                if course.practice_exams != actual_count:
+                    course.practice_exams = actual_count
+                    course.save()
+            except Exception:
+                pass  # Skip sync if it fails, continue with existing count
         
         serializer = CourseSerializer(courses, many=True)
         return Response(serializer.data)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

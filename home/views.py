@@ -620,7 +620,10 @@ from .models import (
     HeroSection, ValuePropositionsSection, ValueProposition,
     Testimonial, BlogPost, RecentlyUpdatedExam, FAQ,
     EmailSubscribeSection, EmailSubscriber, TopCategoriesSection,
-    ExamsPageTrustBar, ExamsPageAbout
+    ExamsPageTrustBar, ExamsPageAbout, PricingPlansSeo,
+    FeaturedExamsSection, PopularProvidersSection, TestimonialsSection,
+    BlogPostsSection, RecentlyUpdatedSection, FAQsSection,
+    HomePageSeo, ExamDetailsSeo, ExamsPageSeo
 )
 from common.middleware import authenticate, restrict
 from bson import ObjectId
@@ -1870,6 +1873,62 @@ def get_email_subscribers(request):
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 
 
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_email_subscriber_by_id(request, subscriber_id):
+    """Admin: Update or delete a specific email subscriber by ID"""
+    try:
+        if not ObjectId.is_valid(subscriber_id):
+            return JsonResponse({"error": "Invalid subscriber ID"}, status=400)
+        
+        subscriber = EmailSubscriber.objects.get(id=ObjectId(subscriber_id))
+        
+        if request.method == 'PUT':
+            data = json.loads(request.body)
+            
+            # Check if email is being updated and if it already exists
+            if 'email' in data and data['email'] != subscriber.email:
+                existing = EmailSubscriber.objects(email=data['email']).first()
+                if existing and str(existing.id) != subscriber_id:
+                    return JsonResponse({"error": "Email already exists"}, status=400)
+                subscriber.email = data['email']
+            
+            if 'is_active' in data:
+                subscriber.is_active = data['is_active']
+            
+            subscriber.updated_at = datetime.utcnow()
+            subscriber.save()
+            
+            return JsonResponse({
+                "success": True,
+                "message": "Subscriber updated successfully",
+                "data": {
+                    "id": str(subscriber.id),
+                    "email": subscriber.email,
+                    "is_active": subscriber.is_active,
+                    "subscribed_at": subscriber.subscribed_at.isoformat() if subscriber.subscribed_at else None
+                }
+            })
+        
+        elif request.method == 'DELETE':
+            subscriber.delete()
+            return JsonResponse({
+                "success": True,
+                "message": "Subscriber deleted successfully"
+            })
+        
+        else:
+            return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    except EmailSubscriber.DoesNotExist:
+        return JsonResponse({"error": "Subscriber not found"}, status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({"error": str(e)}, status=500)
+
+
 # =================== TOP CATEGORIES SECTION ===================
 @csrf_exempt
 def get_top_categories_section(request):
@@ -1909,6 +1968,174 @@ def get_top_categories_section(request):
                 "meta_title": section.meta_title,
                 "meta_keywords": section.meta_keywords,
                 "meta_description": section.meta_description,
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== FEATURED EXAMS SECTION ===================
+@csrf_exempt
+def get_featured_exams_section(request):
+    """Get featured exams section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = FeaturedExamsSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "Featured Certification Exams",
+                    "subtitle": "Explore our most popular certification exams"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== POPULAR PROVIDERS SECTION ===================
+@csrf_exempt
+def get_popular_providers_section(request):
+    """Get popular providers section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = PopularProvidersSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "Popular Certification Providers",
+                    "subtitle": "Trusted by professionals worldwide"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== TESTIMONIALS SECTION ===================
+@csrf_exempt
+def get_testimonials_section(request):
+    """Get testimonials section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = TestimonialsSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "What Our Students Say",
+                    "subtitle": "Real feedback from successful exam takers"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== BLOG POSTS SECTION ===================
+@csrf_exempt
+def get_blog_posts_section(request):
+    """Get blog posts section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = BlogPostsSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "Latest Blog Posts",
+                    "subtitle": "Stay updated with certification tips and news"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== RECENTLY UPDATED SECTION ===================
+@csrf_exempt
+def get_recently_updated_section(request):
+    """Get recently updated section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = RecentlyUpdatedSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "Recently Updated Exams",
+                    "subtitle": "Stay current with the latest exam updates"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# =================== FAQS SECTION ===================
+@csrf_exempt
+def get_faqs_section(request):
+    """Get FAQs section settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        section = FAQsSection.objects(is_active=True).first()
+        if not section:
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": "Frequently Asked Questions",
+                    "subtitle": "Find answers to common questions"
+                }
+            })
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section.id),
+                "heading": section.heading,
+                "subtitle": section.subtitle
             }
         })
     except Exception as e:
@@ -1988,5 +2215,517 @@ def manage_top_categories_section(request):
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== FEATURED EXAMS SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_featured_exams_section(request):
+    """Admin: Create/Update featured exams section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = FeaturedExamsSection.objects(is_active=True).first()
+            if not section:
+                section = FeaturedExamsSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Featured exams section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = FeaturedExamsSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "Featured Certification Exams",
+                        "subtitle": "Explore our most popular certification exams"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== POPULAR PROVIDERS SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_popular_providers_section(request):
+    """Admin: Create/Update popular providers section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = PopularProvidersSection.objects(is_active=True).first()
+            if not section:
+                section = PopularProvidersSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Popular providers section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = PopularProvidersSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "Popular Certification Providers",
+                        "subtitle": "Trusted by professionals worldwide"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== TESTIMONIALS SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_testimonials_section(request):
+    """Admin: Create/Update testimonials section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = TestimonialsSection.objects(is_active=True).first()
+            if not section:
+                section = TestimonialsSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Testimonials section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = TestimonialsSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "What Our Students Say",
+                        "subtitle": "Real feedback from successful exam takers"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== BLOG POSTS SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_blog_posts_section(request):
+    """Admin: Create/Update blog posts section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = BlogPostsSection.objects(is_active=True).first()
+            if not section:
+                section = BlogPostsSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Blog posts section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = BlogPostsSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "Latest Blog Posts",
+                        "subtitle": "Stay updated with certification tips and news"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== RECENTLY UPDATED SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_recently_updated_section(request):
+    """Admin: Create/Update recently updated section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = RecentlyUpdatedSection.objects(is_active=True).first()
+            if not section:
+                section = RecentlyUpdatedSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Recently updated section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = RecentlyUpdatedSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "Recently Updated Exams",
+                        "subtitle": "Stay current with the latest exam updates"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== FAQS SECTION (ADMIN) ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_faqs_section(request):
+    """Admin: Create/Update FAQs section settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section = FAQsSection.objects(is_active=True).first()
+            if not section:
+                section = FAQsSection()
+            section.heading = data.get('heading', section.heading)
+            section.subtitle = data.get('subtitle', section.subtitle)
+            section.updated_at = datetime.utcnow()
+            section.save()
+            return JsonResponse({
+                "success": True,
+                "message": "FAQs section updated successfully",
+                "data": {"id": str(section.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section = FAQsSection.objects(is_active=True).first()
+            if not section:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": "Frequently Asked Questions",
+                        "subtitle": "Find answers to common questions"
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section.id),
+                    "heading": section.heading,
+                    "subtitle": section.subtitle
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== HOME PAGE SEO ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_home_page_seo(request):
+    """Admin: Create/Update home page SEO meta information"""
+    if request.method in ['POST', 'PUT']:
+        try:
+            data = json.loads(request.body)
+            seo = HomePageSeo.objects(is_active=True).first()
+            if not seo:
+                seo = HomePageSeo()
+            seo.meta_title = data.get('meta_title', seo.meta_title)
+            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+            seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Home page SEO updated successfully",
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            seo = HomePageSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== EXAM DETAILS SEO ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_exam_details_seo(request):
+    """Admin: Create/Update exam details page SEO meta information"""
+    if request.method in ['POST', 'PUT']:
+        try:
+            data = json.loads(request.body)
+            seo = ExamDetailsSeo.objects(is_active=True).first()
+            if not seo:
+                seo = ExamDetailsSeo()
+            seo.meta_title = data.get('meta_title', seo.meta_title)
+            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+            seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Exam details SEO updated successfully",
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            seo = ExamDetailsSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== EXAMS PAGE SEO ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_exams_page_seo(request):
+    """Admin: Create/Update exams page SEO meta information"""
+    if request.method in ['POST', 'PUT']:
+        try:
+            data = json.loads(request.body)
+            seo = ExamsPageSeo.objects(is_active=True).first()
+            if not seo:
+                seo = ExamsPageSeo()
+            seo.meta_title = data.get('meta_title', seo.meta_title)
+            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+            seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Exams page SEO updated successfully",
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            seo = ExamsPageSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== PRICING PLANS SEO ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_pricing_plans_seo(request):
+    """Admin: Create/Update pricing plans page SEO meta information"""
+    if request.method in ['POST', 'PUT']:
+        try:
+            data = json.loads(request.body)
+            seo = PricingPlansSeo.objects(is_active=True).first()
+            if not seo:
+                seo = PricingPlansSeo()
+            seo.meta_title = data.get('meta_title', seo.meta_title)
+            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+            seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Pricing plans SEO updated successfully",
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            seo = PricingPlansSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
     else:
         return JsonResponse({"error": "Method not allowed"}, status=405)

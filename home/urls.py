@@ -15,6 +15,12 @@ urlpatterns = [
     path('exams-trust-bar/', views.get_exams_trust_bar, name='get_exams_trust_bar'),
     path('exams-about/', views.get_exams_about, name='get_exams_about'),
     path('top-categories-section/', views.get_top_categories_section, name='get_top_categories_section'),
+    path('featured-exams-section/', views.get_featured_exams_section, name='get_featured_exams_section'),
+    path('popular-providers-section/', views.get_popular_providers_section, name='get_popular_providers_section'),
+    path('testimonials-section/', views.get_testimonials_section, name='get_testimonials_section'),
+    path('blog-posts-section/', views.get_blog_posts_section, name='get_blog_posts_section'),
+    path('recently-updated-section/', views.get_recently_updated_section, name='get_recently_updated_section'),
+    path('faqs-section/', views.get_faqs_section, name='get_faqs_section'),
     
     # Admin APIs - Hero Section
     path('admin/hero/', views.manage_hero_section, name='manage_hero_section'),
@@ -47,7 +53,28 @@ urlpatterns = [
     # Admin APIs - Email Subscribe Section
     path('admin/email-subscribe-section/', views.manage_email_subscribe_section, name='manage_email_subscribe_section'),
     path('admin/email-subscribers/', views.get_email_subscribers, name='get_email_subscribers'),
+    path('admin/email-subscribers/<str:subscriber_id>/', views.manage_email_subscriber_by_id, name='manage_email_subscriber_by_id'),
     
     # Admin APIs - Top Categories Section
     path('admin/top-categories-section/', views.manage_top_categories_section, name='manage_top_categories_section'),
+    
+    # Admin APIs - Section Settings
+    path('admin/featured-exams-section/', views.manage_featured_exams_section, name='manage_featured_exams_section'),
+    path('admin/popular-providers-section/', views.manage_popular_providers_section, name='manage_popular_providers_section'),
+    path('admin/testimonials-section/', views.manage_testimonials_section, name='manage_testimonials_section'),
+    path('admin/blog-posts-section/', views.manage_blog_posts_section, name='manage_blog_posts_section'),
+    path('admin/recently-updated-section/', views.manage_recently_updated_section, name='manage_recently_updated_section'),
+    path('admin/faqs-section/', views.manage_faqs_section, name='manage_faqs_section'),
+    
+    # Admin APIs - Home Page SEO
+    path('admin/home-page-seo/', views.manage_home_page_seo, name='manage_home_page_seo'),
+    
+    # Admin APIs - Exam Details SEO
+    path('admin/exam-details-seo/', views.manage_exam_details_seo, name='manage_exam_details_seo'),
+    
+    # Admin APIs - Exams Page SEO
+    path('admin/exams-page-seo/', views.manage_exams_page_seo, name='manage_exams_page_seo'),
+    
+    # Admin APIs - Pricing Plans SEO
+    path('admin/pricing-plans-seo/', views.manage_pricing_plans_seo, name='manage_pricing_plans_seo'),
 ]

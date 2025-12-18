@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, BooleanField, IntField, DateTimeField, FloatField
+from mongoengine import Document, StringField, BooleanField, IntField, DateTimeField, FloatField, ListField, EmbeddedDocument, EmbeddedDocumentField
 from datetime import datetime
 
 class AdminSettings(Document):
@@ -34,3 +34,17 @@ class TermsOfService(Document):
     updated_at = DateTimeField(default=datetime.utcnow)
     
     meta = {'collection': 'terms_of_service'}
+
+
+class SitemapURL(EmbeddedDocument):
+    url = StringField(required=True)
+    priority = FloatField(default=0.5, min_value=0.0, max_value=1.0)
+    changefreq = StringField(default="monthly", choices=["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"])
+    lastmod = DateTimeField(default=datetime.utcnow)
+
+
+class Sitemap(Document):
+    urls = ListField(EmbeddedDocumentField(SitemapURL), default=list)
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'sitemap'}

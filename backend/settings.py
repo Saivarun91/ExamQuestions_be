@@ -93,9 +93,9 @@ from mongoengine import connect
 
 connect(
     db="mock-test",
-    host="mongodb+srv://anchalaniharika_db_user:Niharika2002@cluster0.0quwioe.mongodb.net/mock-test?retryWrites=true&w=majority"
+    # host="mongodb+srv://anchalaniharika_db_user:Niharika2002@cluster0.0quwioe.mongodb.net/mock-test?retryWrites=true&w=majority"
+    host="mongodb+srv://anchalaniharika_db_user:Niharika2002@cluster0.rfjqv1z.mongodb.net/?appName=Cluster0"
 )
-
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -187,3 +187,6 @@ CORS_ALLOW_HEADERS = [
 # Razorpay Configuration
 RAZORPAY_KEY_ID = 'rzp_test_gzd0pzBqOopBBl'  # Add your Razorpay Key ID here
 RAZORPAY_KEY_SECRET = 'DQewqJImITIliHknSsLdeDG4'  # Add your Razorpay Key Secret here
+
+RECAPTCHA_SECRET_KEY = '6LcaPiQsAAAAAMAoTzw9QiVCxuiDt8SoLA2ytBi-'
+RECAPTCHA_VERIFY_URL = 'https://www.google.com/recaptcha/api/siteverify'

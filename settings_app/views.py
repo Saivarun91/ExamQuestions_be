@@ -3,7 +3,7 @@ from datetime import datetime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from common.middleware import authenticate, restrict
-from .models import AdminSettings, PrivacyPolicy, TermsOfService
+from .models import AdminSettings, PrivacyPolicy, TermsOfService, Sitemap, SitemapURL
 
 @csrf_exempt
 def get_public_settings(request):
@@ -195,5 +195,182 @@ def update_terms_of_service(request):
         terms.save()
         
         return JsonResponse({"success": True, "message": "Terms of service updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= SITEMAP =================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def get_sitemap(request):
+    """Get all sitemap URLs (admin only)."""
+    try:
+        sitemap = Sitemap.objects.first()
+        if not sitemap:
+            sitemap = Sitemap()
+            sitemap.save()
+        
+        urls = []
+        for url_obj in sitemap.urls:
+            urls.append({
+                "url": url_obj.url,
+                "priority": url_obj.priority,
+                "changefreq": url_obj.changefreq,
+                "lastmod": url_obj.lastmod.isoformat() if url_obj.lastmod else None
+            })
+        
+        return JsonResponse({
+            "success": True,
+            "urls": urls,
+            "updated_at": sitemap.updated_at.isoformat() if sitemap.updated_at else None
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def add_sitemap_url(request):
+    """Add a new URL to sitemap (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        url = body.get("url", "").strip()
+        priority = float(body.get("priority", 0.5))
+        changefreq = body.get("changefreq", "monthly")
+        
+        if not url:
+            return JsonResponse({"success": False, "error": "URL is required"}, status=400)
+        
+        # Validate URL format
+        if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("/"):
+            return JsonResponse({"success": False, "error": "Invalid URL format"}, status=400)
+        
+        # Validate priority
+        priority = max(0.0, min(1.0, priority))
+        
+        # Validate changefreq
+        valid_changefreqs = ["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"]
+        if changefreq not in valid_changefreqs:
+            changefreq = "monthly"
+        
+        sitemap = Sitemap.objects.first()
+        if not sitemap:
+            sitemap = Sitemap()
+        
+        # Check if URL already exists
+        for existing_url in sitemap.urls:
+            if existing_url.url == url:
+                return JsonResponse({"success": False, "error": "URL already exists in sitemap"}, status=400)
+        
+        # Add new URL
+        new_url = SitemapURL(
+            url=url,
+            priority=priority,
+            changefreq=changefreq,
+            lastmod=datetime.utcnow()
+        )
+        sitemap.urls.append(new_url)
+        sitemap.updated_at = datetime.utcnow()
+        sitemap.save()
+        
+        return JsonResponse({"success": True, "message": "URL added to sitemap successfully"}, status=200)
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": f"Invalid value: {str(e)}"}, status=400)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_sitemap_url(request):
+    """Update an existing sitemap URL (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        old_url = body.get("old_url", "").strip()
+        new_url = body.get("url", "").strip()
+        priority = body.get("priority")
+        changefreq = body.get("changefreq")
+        
+        if not old_url:
+            return JsonResponse({"success": False, "error": "Old URL is required"}, status=400)
+        
+        if not new_url:
+            return JsonResponse({"success": False, "error": "New URL is required"}, status=400)
+        
+        # Validate URL format
+        if not new_url.startswith("http://") and not new_url.startswith("https://") and not new_url.startswith("/"):
+            return JsonResponse({"success": False, "error": "Invalid URL format"}, status=400)
+        
+        sitemap = Sitemap.objects.first()
+        if not sitemap:
+            return JsonResponse({"success": False, "error": "Sitemap not found"}, status=404)
+        
+        # Find and update URL
+        url_found = False
+        for url_obj in sitemap.urls:
+            if url_obj.url == old_url:
+                url_obj.url = new_url
+                if priority is not None:
+                    url_obj.priority = max(0.0, min(1.0, float(priority)))
+                if changefreq is not None:
+                    valid_changefreqs = ["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"]
+                    if changefreq in valid_changefreqs:
+                        url_obj.changefreq = changefreq
+                url_obj.lastmod = datetime.utcnow()
+                url_found = True
+                break
+        
+        if not url_found:
+            return JsonResponse({"success": False, "error": "URL not found in sitemap"}, status=404)
+        
+        sitemap.updated_at = datetime.utcnow()
+        sitemap.save()
+        
+        return JsonResponse({"success": True, "message": "URL updated successfully"}, status=200)
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": f"Invalid value: {str(e)}"}, status=400)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def delete_sitemap_url(request):
+    """Delete a URL from sitemap (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        url = body.get("url", "").strip()
+        
+        if not url:
+            return JsonResponse({"success": False, "error": "URL is required"}, status=400)
+        
+        sitemap = Sitemap.objects.first()
+        if not sitemap:
+            return JsonResponse({"success": False, "error": "Sitemap not found"}, status=404)
+        
+        # Remove URL
+        original_count = len(sitemap.urls)
+        sitemap.urls = [url_obj for url_obj in sitemap.urls if url_obj.url != url]
+        
+        if len(sitemap.urls) == original_count:
+            return JsonResponse({"success": False, "error": "URL not found in sitemap"}, status=404)
+        
+        sitemap.updated_at = datetime.utcnow()
+        sitemap.save()
+        
+        return JsonResponse({"success": True, "message": "URL deleted from sitemap successfully"}, status=200)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
