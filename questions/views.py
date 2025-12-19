@@ -423,61 +423,257 @@ def upload_questions_csv(request):
         except Course.DoesNotExist:
             return JsonResponse({"error": "Course not found", "success": False}, status=404)
         
-        # Read CSV file
+        # Read CSV file with multiple encoding support
+        csv_file.seek(0)  # Reset file pointer
+        file_content = csv_file.read()
+        decoded_file = None
+        
+        # Try multiple encodings in order of preference
+        encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'windows-1252']
+        
+        for encoding in encodings:
+            try:
+                decoded_file = file_content.decode(encoding)
+                print(f"✅ CSV file decoded successfully with encoding: {encoding}")
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        if decoded_file is None:
+            print(f"❌ Error decoding CSV: Could not decode with any supported encoding")
+            return JsonResponse({"error": "Error reading CSV file: Could not decode file. Please ensure the file is saved as UTF-8, Latin-1, or Windows-1252 encoding.", "success": False}, status=400)
+        
         try:
-            decoded_file = csv_file.read().decode('utf-8')
             csv_reader = csv.DictReader(io.StringIO(decoded_file))
-            print(f"✅ CSV file decoded successfully")
         except Exception as e:
-            print(f"❌ Error decoding CSV: {str(e)}")
-            return JsonResponse({"error": f"Error reading CSV file: {str(e)}", "success": False}, status=400)
+            print(f"❌ Error parsing CSV: {str(e)}")
+            return JsonResponse({"error": f"Error parsing CSV file: {str(e)}", "success": False}, status=400)
+        
+        # Print CSV headers for debugging
+        if csv_reader.fieldnames:
+            # Normalize header names (strip whitespace)
+            normalized_headers = [h.strip() if h else h for h in csv_reader.fieldnames]
+            print(f"📋 CSV Headers: {normalized_headers}")
+        else:
+            print(f"⚠️ Warning: No headers found in CSV file")
+            return JsonResponse({"error": "CSV file has no headers. Please ensure the first row contains column names.", "success": False}, status=400)
         
         created_count = 0
         errors = []
+        row_count = 0
+        
+        # Normalize column names (case-insensitive, strip whitespace)
+        def get_row_value(row, possible_keys):
+            """Get value from row using multiple possible column name variations"""
+            # First, normalize all row keys (strip whitespace)
+            normalized_row = {k.strip() if k else k: v for k, v in row.items()}
+            
+            for key in possible_keys:
+                key_normalized = key.strip().lower()
+                # Try exact match (case-insensitive, whitespace-insensitive)
+                for row_key, row_value in normalized_row.items():
+                    if row_key and row_key.strip().lower() == key_normalized:
+                        return row_value
+            return None
         
         for row_num, row in enumerate(csv_reader, start=2):
+            row_count += 1
             try:
-                # Parse options (expecting JSON string or pipe-separated)
-                options_str = row.get('options', '')
-                if not options_str:
-                    errors.append(f"Row {row_num}: No options provided")
+                # Skip empty rows
+                if not row or all(not str(v).strip() if v else True for v in row.values()):
                     continue
-                    
-                if options_str.startswith('['):
-                    import json
-                    options = json.loads(options_str)
+                
+                # Debug: Print first few rows to see structure
+                if row_num <= 3:
+                    print(f"📝 Row {row_num} data: {dict(row)}")
+                    print(f"   Row keys: {list(row.keys())}")
+                
+                # Parse options - handle two formats:
+                # 1. Single column with pipe/comma-separated values: "Option A|Option B|Option C"
+                # 2. Separate columns: "Answer Option A", "Answer Option B", etc.
+                options = []
+                options_str = get_row_value(row, ['options', 'option', 'Options', 'Option']) or ''
+                
+                if options_str and str(options_str).strip():
+                    # Format 1: Single column with options
+                    options_str = str(options_str).strip()
+                    if options_str.startswith('['):
+                        import json
+                        options = json.loads(options_str)
+                    else:
+                        # Pipe-separated or semicolon-separated format
+                        if '|' in options_str:
+                            options = [{'text': opt.strip()} for opt in options_str.split('|') if opt.strip()]
+                        elif ';' in options_str:
+                            options = [{'text': opt.strip()} for opt in options_str.split(';') if opt.strip()]
+                        else:
+                            # Try comma-separated as fallback
+                            options = [{'text': opt.strip()} for opt in options_str.split(',') if opt.strip()]
                 else:
-                    # Pipe-separated format: "Option A|Option B|Option C"
-                    options = [{'text': opt.strip()} for opt in options_str.split('|') if opt.strip()]
+                    # Format 2: Separate columns for each option (Answer Option A, B, C, D, E)
+                    option_columns = [
+                        ['Answer Option A', 'answer option a', 'option a', 'Option A'],
+                        ['Answer Option B', 'answer option b', 'option b', 'Option B'],
+                        ['Answer Option C', 'answer option c', 'option c', 'Option C'],
+                        ['Answer Option D', 'answer option d', 'option d', 'Option D'],
+                        ['Answer Option E', 'answer option e', 'option e', 'Option E']
+                    ]
+                    
+                    explanation_columns = [
+                        ['Explanation A', 'explanation a'],
+                        ['Explanation B', 'explanation b'],
+                        ['Explanation C', 'explanation c'],
+                        ['Explanation D', 'explanation d'],
+                        ['Explanation E', 'explanation e']
+                    ]
+                    
+                    for i, option_cols in enumerate(option_columns):
+                        option_text = get_row_value(row, option_cols) or ''
+                        if option_text and str(option_text).strip():
+                            option_data = {'text': str(option_text).strip()}
+                            # Try to get corresponding explanation
+                            if i < len(explanation_columns):
+                                explanation_text = get_row_value(row, explanation_columns[i]) or ''
+                                if explanation_text and str(explanation_text).strip():
+                                    option_data['explanation'] = str(explanation_text).strip()
+                            options.append(option_data)
+                
+                if not options:
+                    error_detail = f"Row {row_num}: No options provided. Available columns: {list(row.keys())}"
+                    errors.append(error_detail)
+                    if row_num <= 3:
+                        print(f"   ⚠️  {error_detail}")
+                    continue
                 
                 # Parse correct answers (comma-separated or pipe-separated)
-                correct_answers_str = row.get('correct_answers', '')
-                if not correct_answers_str:
-                    errors.append(f"Row {row_num}: No correct answers provided")
+                # Try multiple column name variations
+                correct_answers_str = get_row_value(row, ['correct_answers', 'correct_answer', 'correct_ans', 'answer', 'Correct Answers', 'Correct Answer']) or ''
+                if not correct_answers_str or not str(correct_answers_str).strip():
+                    errors.append(f"Row {row_num}: No correct answers provided. Available columns: {list(row.keys())}")
                     continue
-                    
+                
+                correct_answers_str = str(correct_answers_str).strip()
                 # Handle both comma and pipe separators
                 if '|' in correct_answers_str:
                     correct_answers = [ans.strip() for ans in correct_answers_str.split('|') if ans.strip()]
                 else:
-                    correct_answers = [ans.strip() for ans in correct_answers_str.split(',') if ans.strip()]
+                    # Split by comma, but handle quoted values
+                    correct_answers = []
+                    # Try to handle comma-separated values, including those with commas inside quotes
+                    import re
+                    # Split by comma, but preserve quoted strings
+                    parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', correct_answers_str)
+                    for part in parts:
+                        part = part.strip().strip('"').strip("'")
+                        if part:
+                            correct_answers.append(part)
+                    
+                    # If regex didn't work well, fall back to simple split
+                    if not correct_answers:
+                        correct_answers = [ans.strip().strip('"').strip("'") for ans in correct_answers_str.split(',') if ans.strip()]
                 
-                question_text = row.get('question_text', '').strip()
-                if not question_text:
-                    errors.append(f"Row {row_num}: No question text provided")
+                if not correct_answers:
+                    errors.append(f"Row {row_num}: No valid correct answers found after parsing. Value was: '{correct_answers_str}'")
+                    if row_num <= 3:
+                        print(f"   ⚠️  Row {row_num}: Could not parse correct answers from: '{correct_answers_str}'")
                     continue
+                
+                # Get question text - try multiple column name variations
+                question_text = get_row_value(row, ['question_text', 'question', 'Question Text', 'Question']) or ''
+                question_text = str(question_text).strip()
+                if not question_text:
+                    errors.append(f"Row {row_num}: No question text provided. Available columns: {list(row.keys())}")
+                    continue
+                
+                # Get question type - try multiple column name variations
+                question_type_str = get_row_value(row, ['question_type', 'type', 'Question Type', 'Type']) or 'single'
+                question_type = str(question_type_str).strip().lower() if question_type_str else 'single'
+                # Normalize question type values
+                if question_type in ['single', 'single choice', 'single-choice', '1']:
+                    question_type = 'single'
+                elif question_type in ['multiple', 'multiple choice', 'multiple-choice', 'multi', '2']:
+                    question_type = 'multiple'
+                else:
+                    question_type = 'single'  # Default to single if invalid
+                
+                # Get explanation - try multiple column name variations (Overall Explanation, Explanation, etc.)
+                explanation = get_row_value(row, ['explanation', 'Explanation', 'Overall Explanation', 'overall explanation']) or ''
+                explanation = str(explanation).strip() if explanation else ''
+                
+                # Get question image - try multiple column name variations
+                question_image = get_row_value(row, ['question_image', 'image', 'Question Image', 'Image']) or None
+                question_image = str(question_image).strip() if question_image and str(question_image).strip() else None
+                
+                # Get marks - try multiple column name variations
+                marks_str = get_row_value(row, ['marks', 'mark', 'Marks', 'Mark']) or '1'
+                try:
+                    marks = int(str(marks_str).strip()) if marks_str and str(marks_str).strip() else 1
+                except (ValueError, TypeError):
+                    marks = 1
+                
+                # Get tags - try multiple column name variations (Domain, Tags, Tag, etc.)
+                tags_str = get_row_value(row, ['tags', 'tag', 'Tags', 'Tag', 'Domain', 'domain']) or ''
+                if tags_str and str(tags_str).strip():
+                    tags = [tag.strip() for tag in str(tags_str).split(',') if tag.strip()]
+                else:
+                    tags = []
+                
+                # Validate that correct_answers match options
+                # Check if correct answers are valid option texts or option letters (A, B, C, D, E)
+                option_texts = [opt.get('text', '').strip() for opt in options if opt.get('text')]
+                option_letters = ['A', 'B', 'C', 'D', 'E'][:len(options)]
+                
+                # Map correct answers - handle both full text and letter format
+                mapped_correct_answers = []
+                for ans in correct_answers:
+                    ans_stripped = ans.strip()
+                    # Check if it's a letter (A, B, C, D, E)
+                    if ans_stripped.upper() in option_letters:
+                        # Map letter to option text
+                        letter_index = option_letters.index(ans_stripped.upper())
+                        if letter_index < len(option_texts):
+                            mapped_correct_answers.append(option_texts[letter_index])
+                        else:
+                            mapped_correct_answers.append(ans_stripped)  # Keep original if mapping fails
+                    # Check if it matches an option text exactly
+                    elif ans_stripped in option_texts:
+                        mapped_correct_answers.append(ans_stripped)
+                    # Try case-insensitive match
+                    else:
+                        matched = False
+                        for opt_text in option_texts:
+                            if opt_text.lower() == ans_stripped.lower():
+                                mapped_correct_answers.append(opt_text)
+                                matched = True
+                                break
+                        if not matched:
+                            # If no match found, keep original and let validation catch it
+                            mapped_correct_answers.append(ans_stripped)
+                
+                # Validate mapped answers
+                invalid_answers = [ans for ans in mapped_correct_answers if ans not in option_texts]
+                
+                if invalid_answers:
+                    error_msg = f"Row {row_num}: Correct answers '{', '.join(invalid_answers)}' do not match any options. Available options: {', '.join(option_texts)}"
+                    errors.append(error_msg)
+                    if row_num <= 3:
+                        print(f"   ⚠️  {error_msg}")
+                    continue
+                
+                # Use mapped correct answers
+                correct_answers = mapped_correct_answers
                 
                 # Create question
                 question = Question(
                     course=course,
                     question_text=question_text,
-                    question_type=row.get('question_type', 'single').strip().lower(),
+                    question_type=question_type,
                     options=options,
                     correct_answers=correct_answers,
-                    explanation=row.get('explanation', '').strip(),
-                    question_image=row.get('question_image', None) if row.get('question_image', '').strip() else None,
-                    marks=int(row.get('marks', 1)) if row.get('marks', '').strip() else 1,
-                    tags=[tag.strip() for tag in row.get('tags', '').split(',') if tag.strip()] if row.get('tags', '').strip() else []
+                    explanation=explanation,
+                    question_image=question_image,
+                    marks=marks,
+                    tags=tags
                 )
                 question.save()
                 created_count += 1
@@ -486,9 +682,23 @@ def upload_questions_csv(request):
             except Exception as e:
                 error_msg = f"Row {row_num}: {str(e)}"
                 errors.append(error_msg)
-                print(f"❌ {error_msg}")
+                print(f"❌ Row {row_num} error: {str(e)}")
+                # Print row data for debugging
+                if row_num <= 3:
+                    print(f"   Row data: {dict(row)}")
                 import traceback
-                traceback.print_exc()
+                if row_num <= 3:  # Only print full traceback for first few errors
+                    traceback.print_exc()
+        
+        # Print summary of errors
+        if errors:
+            print(f"\n📊 Error Summary:")
+            print(f"   Total errors: {len(errors)}")
+            # Print first 10 errors as examples
+            for i, error in enumerate(errors[:10], 1):
+                print(f"   {i}. {error}")
+            if len(errors) > 10:
+                print(f"   ... and {len(errors) - 10} more errors")
         
         print(f"✅ Upload complete: {created_count} questions created, {len(errors)} errors")
         
@@ -498,11 +708,13 @@ def upload_questions_csv(request):
         course.save()
         print(f"✅ Updated course questions count: {question_count}")
         
+        # Return response with detailed error information
         return JsonResponse({
-            "success": True,
-            "message": f"{created_count} questions uploaded successfully",
+            "success": True if created_count > 0 else False,
+            "message": f"{created_count} questions uploaded successfully" if created_count > 0 else f"No questions were created. {len(errors)} errors found. Please check the CSV format and column names.",
             "created_count": created_count,
-            "errors": errors if errors else None
+            "errors": errors if errors else None,
+            "total_rows_processed": row_count if 'row_count' in locals() else 0
         })
         
     except Exception as e:

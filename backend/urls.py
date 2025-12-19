@@ -5,6 +5,7 @@ from .sitemap import sitemap_view
 urlpatterns = [
     path('admin/', admin.site.urls),
     # Specific API paths first (before catch-all patterns)
+    path("api/dashboard/", include("dashboard.urls")),
     path('api/users/', include('users.urls')),
     path('api/categories/', include('categories.urls')),
     path('api/courses/', include('courses.urls')),
@@ -16,7 +17,6 @@ urlpatterns = [
     path("api/settings/", include("settings_app.urls")),   
     path("api/home/", include("home.urls")),
     path("api/blogs/", include("blog.urls")),
-    path("api/dashboard/", include("dashboard.urls")),
     path("api/reviews/", include("reviews.urls")),
     path("api/search-logs/", include("search_logs.urls")),
     path("api/email-templates/", include("email_templates.urls")),

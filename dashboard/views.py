@@ -16,7 +16,12 @@ def get_dashboard_data(request):
     try:
         # Get user info from request.user (set by authenticate decorator)
         user_data = request.user
+        if not user_data:
+            return Response({"error": "User authentication data not found"}, status=401)
+        
         user_id = user_data.get('id')
+        if not user_id or user_id == '':
+            return Response({"error": "User ID not found in authentication data"}, status=401)
         
         # Fetch actual user from database
         from users.models import User
@@ -25,9 +30,23 @@ def get_dashboard_data(request):
         from enrollments.models import Enrollment
         from exams.models import TestAttempt
         
-        user = User.objects.get(id=ObjectId(user_id))
+        try:
+            # Convert user_id to ObjectId safely
+            user_object_id = ObjectId(user_id)
+            user = User.objects.get(id=user_object_id)
+        except (ValueError, TypeError) as e:
+            return Response({"error": f"Invalid user ID format: {str(e)}"}, status=400)
+        except User.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+        except Exception as e:
+            return Response({"error": f"Error fetching user: {str(e)}"}, status=500)
+        
+        # Validate user object has required attributes
+        if not hasattr(user, 'email') or not user.email:
+            return Response({"error": "User email not found"}, status=500)
+        
         user_email = user.email
-        user_name = user.fullname or user_email.split('@')[0].capitalize()
+        user_name = getattr(user, 'fullname', None) or user_email.split('@')[0].capitalize()
         
         # Get enrolled courses from both Enrollment collection AND user.enrolled_courses
         # This ensures courses are shown for both regular and OAuth users

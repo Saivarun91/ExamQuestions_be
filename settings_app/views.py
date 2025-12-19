@@ -16,7 +16,8 @@ def get_public_settings(request):
 
         return JsonResponse({
             "success": True, 
-            "site_name": settings_obj.site_name or "AllExamQuestions",
+            "site_name": getattr(settings_obj, 'site_name', '') or '',
+            "logo_url": getattr(settings_obj, 'logo_url', '') or '',
             "contact_email": getattr(settings_obj, 'contact_email', '') or '',
             "contact_phone": getattr(settings_obj, 'contact_phone', '') or '',
             "contact_address": getattr(settings_obj, 'contact_address', '') or '',
@@ -41,6 +42,7 @@ def get_admin_settings(request):
         data = {
             "site_name": settings_obj.site_name,
             "admin_email": settings_obj.admin_email,
+            "logo_url": getattr(settings_obj, 'logo_url', '') or '',
             "email_notifications": settings_obj.email_notifications,
             "maintenance_mode": settings_obj.maintenance_mode,
             "default_user_role": settings_obj.default_user_role,
@@ -75,6 +77,8 @@ def update_admin_settings(request):
         # Update fields if provided
         settings_obj.site_name = body.get("site_name", settings_obj.site_name)
         settings_obj.admin_email = body.get("admin_email", settings_obj.admin_email)
+        if "logo_url" in body:
+            settings_obj.logo_url = body.get("logo_url", "")
         settings_obj.email_notifications = body.get("email_notifications", settings_obj.email_notifications)
         settings_obj.maintenance_mode = body.get("maintenance_mode", settings_obj.maintenance_mode)
         settings_obj.default_user_role = body.get("default_user_role", settings_obj.default_user_role)
