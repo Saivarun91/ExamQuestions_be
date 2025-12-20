@@ -173,6 +173,7 @@ class CourseSerializer(serializers.Serializer):
                     seen_ids.add(pt_id)
                     practice_tests_list.append({
                         'id': pt_id,
+                        'slug': getattr(pt, 'slug', ''),
                         'name': getattr(pt, 'title', ''),
                         'title': getattr(pt, 'title', ''),
                         'description': getattr(pt, 'overview', ''),

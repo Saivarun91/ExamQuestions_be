@@ -2435,22 +2435,25 @@ def get_or_create_test_attempt(request):
                     except PracticeTest.DoesNotExist:
                         return JsonResponse({"success": False, "message": "Practice test not found"}, status=404)
                 else:
-                    # test_id is likely an index (1-based) - query PracticeTest objects directly
-                    try:
-                        test_index = int(test_id) - 1  # Convert to 0-based index
-                        
-                        # Get all practice tests for this course from the database
-                        all_course_tests = list(PracticeTest.objects(course=course).order_by('created_at'))
-                        
-                        if test_index >= 0 and test_index < len(all_course_tests):
-                            category = all_course_tests[test_index]
-                        else:
-                            return JsonResponse({
-                                "success": False, 
-                                "message": f"Practice test index {test_index + 1} out of range. Course has {len(all_course_tests)} practice test(s)."
-                            }, status=404)
-                    except ValueError:
-                        return JsonResponse({"success": False, "message": f"Invalid test_id format: '{test_id}'. Expected a number (1-based index) or ObjectId."}, status=400)
+                    # Try to find by slug first (SEO-friendly)
+                    category = PracticeTest.objects(slug=test_id, course=course).first()
+                    if not category:
+                        # test_id is likely an index (1-based) - query PracticeTest objects directly
+                        try:
+                            test_index = int(test_id) - 1  # Convert to 0-based index
+                            
+                            # Get all practice tests for this course from the database
+                            all_course_tests = list(PracticeTest.objects(course=course).order_by('created_at'))
+                            
+                            if test_index >= 0 and test_index < len(all_course_tests):
+                                category = all_course_tests[test_index]
+                            else:
+                                return JsonResponse({
+                                    "success": False, 
+                                    "message": f"Practice test index {test_index + 1} out of range. Course has {len(all_course_tests)} practice test(s)."
+                                }, status=404)
+                        except ValueError:
+                            return JsonResponse({"success": False, "message": f"Invalid test_id format: '{test_id}'. Expected a slug, number (1-based index), or ObjectId."}, status=400)
             except Course.DoesNotExist:
                 return JsonResponse({"success": False, "message": "Course not found"}, status=404)
             except (ValueError, TypeError):
