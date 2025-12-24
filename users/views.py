@@ -40,10 +40,11 @@ def generate_jwt(payload):
 def verify_recaptcha(token):
     """
     Verify reCAPTCHA token with Google's API.
-    Returns True if valid, False otherwise.
+    Returns (True, None) if valid, (False, error_message) otherwise.
     """
+    
     if not token:
-        return False
+        return False, "reCAPTCHA token is missing"
     
     try:
         response = requests.post(
@@ -52,13 +53,51 @@ def verify_recaptcha(token):
                 'secret': settings.RECAPTCHA_SECRET_KEY,
                 'response': token
             },
-            timeout=5
+            timeout=10
         )
+        
+        if response.status_code != 200:
+            print(f"reCAPTCHA API returned status {response.status_code}: {response.text}")
+            return False, "reCAPTCHA verification service unavailable. Please try again."
+        
         result = response.json()
-        return result.get('success', False)
+        success = result.get('success', False)
+        
+        if not success:
+            error_codes = result.get('error-codes', [])
+            error_message = "reCAPTCHA verification failed. Please try again."
+            
+            # Provide more specific error messages
+            if 'invalid-input-secret' in error_codes:
+                error_message = "reCAPTCHA configuration error. Please contact support."
+                print(f"reCAPTCHA error: Invalid secret key")
+            elif 'invalid-input-response' in error_codes:
+                error_message = "reCAPTCHA verification failed. Please complete the captcha again."
+                print(f"reCAPTCHA error: Invalid token - {token[:20]}...")
+            elif 'timeout-or-duplicate' in error_codes:
+                error_message = "reCAPTCHA token expired. Please complete the captcha again."
+                print(f"reCAPTCHA error: Token timeout or duplicate")
+            elif 'bad-request' in error_codes:
+                error_message = "reCAPTCHA verification failed. Please try again."
+                print(f"reCAPTCHA error: Bad request - {error_codes}")
+            else:
+                print(f"reCAPTCHA error codes: {error_codes}")
+            
+            return False, error_message
+        
+        return True, None
+        
+    except requests.exceptions.Timeout:
+        print("reCAPTCHA verification timeout")
+        return False, "reCAPTCHA verification timed out. Please try again."
+    except requests.exceptions.RequestException as e:
+        print(f"reCAPTCHA verification network error: {e}")
+        return False, "Network error during reCAPTCHA verification. Please check your connection and try again."
     except Exception as e:
         print(f"reCAPTCHA verification error: {e}")
-        return False
+        import traceback
+        traceback.print_exc()
+        return False, "reCAPTCHA verification error. Please try again."
 
 
 # ================= REGISTER =================
@@ -73,11 +112,13 @@ def register_user(request):
         recaptcha_token = data.get("recaptcha_token")
         
         # Verify reCAPTCHA token
-        if not verify_recaptcha(recaptcha_token):
+        recaptcha_valid, recaptcha_error = verify_recaptcha(recaptcha_token)
+        if not recaptcha_valid:
             return Response(
-                {'error': 'reCAPTCHA verification failed. Please try again.'},
+                {'error': recaptcha_error or 'reCAPTCHA verification failed. Please try again.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+            print("recaptcha error : ",recaptcha_error)
         
         if not email or not password:
             return Response(

@@ -255,10 +255,15 @@ def get_dashboard_data(request):
         overall_accuracy = int((total_correct / total_questions_answered * 100)) if total_questions_answered > 0 else 0
         
         # Calculate average score from all completed attempts
+        # Only count attempts that have a valid percentage value
         average_score = 0
         if tests_completed > 0:
-            total_percentage = sum([attempt.percentage for attempt in all_attempts] or [0])
-            average_score = int(total_percentage / tests_completed) if tests_completed > 0 else 0
+            valid_percentages = [attempt.percentage for attempt in all_attempts if hasattr(attempt, 'percentage') and attempt.percentage is not None]
+            if valid_percentages and len(valid_percentages) > 0:
+                total_percentage = sum(valid_percentages)
+                average_score = int(round(total_percentage / len(valid_percentages))) if len(valid_percentages) > 0 else 0
+            else:
+                average_score = 0
         
         # Format time practicing
         hours = total_time_practicing // 60
@@ -279,7 +284,8 @@ def get_dashboard_data(request):
         # Sort by score descending
         topic_performance.sort(key=lambda x: x["score"], reverse=True)
         
-        # Get coupons that the user has used (from used_by list) or coupons assigned to user
+        # Get coupons that are specifically assigned to this user or that the user has used
+        # Only show coupons that belong to this user (not common coupons for all users)
         coupons = []
         try:
             from reviews.models import Coupon
@@ -288,14 +294,19 @@ def get_dashboard_data(request):
             # Get all active coupons (we'll filter by used_by in Python for better compatibility)
             all_active_coupons = Coupon.objects(is_active=True)
             
-            # Filter coupons where user is in used_by list or assigned to user or is common
+            # Filter coupons where user is in used_by list OR assigned to user
+            # Do NOT include common coupons - only user-specific coupons
             all_coupons = {}
             for coupon in all_active_coupons:
                 # Check if user has used this coupon
                 user_has_used = user_object_id in (coupon.used_by or [])
                 
-                # Include if: user has used it, OR it's assigned to user, OR it's a common coupon
-                if user_has_used or (coupon.user and str(coupon.user.id) == user_id) or coupon.is_common:
+                # Check if coupon is assigned to this specific user
+                coupon_assigned_to_user = coupon.user and str(coupon.user.id) == user_id
+                
+                # Include ONLY if: user has used it OR it's assigned to this specific user
+                # Do NOT include common coupons (coupon.is_common)
+                if user_has_used or coupon_assigned_to_user:
                     all_coupons[str(coupon.id)] = coupon
             
             # Convert to list format
