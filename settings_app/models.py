@@ -25,6 +25,9 @@ class AdminSettings(Document):
 
 class PrivacyPolicy(Document):
     content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
     updated_at = DateTimeField(default=datetime.utcnow)
     
     meta = {'collection': 'privacy_policy'}
@@ -32,9 +35,45 @@ class PrivacyPolicy(Document):
 
 class TermsOfService(Document):
     content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
     updated_at = DateTimeField(default=datetime.utcnow)
     
     meta = {'collection': 'terms_of_service'}
+
+
+class RefundCancellationPolicy(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'refund_cancellation_policy'}
+
+
+class Disclaimer(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'disclaimer'}
+
+
+class ContactUs(Document):
+    contact_email = StringField(default="")
+    contact_phone = StringField(default="")
+    contact_address = StringField(default="")
+    contact_website = StringField(default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'contact_us'}
 
 
 class SitemapURL(EmbeddedDocument):

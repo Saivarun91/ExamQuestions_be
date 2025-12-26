@@ -3,7 +3,7 @@ from datetime import datetime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from common.middleware import authenticate, restrict
-from .models import AdminSettings, PrivacyPolicy, TermsOfService, Sitemap, SitemapURL
+from .models import AdminSettings, PrivacyPolicy, TermsOfService, RefundCancellationPolicy, Disclaimer, ContactUs, Sitemap, SitemapURL
 
 @csrf_exempt
 def get_public_settings(request):
@@ -14,14 +14,33 @@ def get_public_settings(request):
             settings_obj = AdminSettings()
             settings_obj.save()
 
+        # Get contact details from ContactUs model (preferred) or fallback to AdminSettings
+        contact_obj = ContactUs.objects.first()
+        contact_email = ""
+        contact_phone = ""
+        contact_address = ""
+        contact_website = ""
+        
+        if contact_obj:
+            contact_email = getattr(contact_obj, 'contact_email', '') or ''
+            contact_phone = getattr(contact_obj, 'contact_phone', '') or ''
+            contact_address = getattr(contact_obj, 'contact_address', '') or ''
+            contact_website = getattr(contact_obj, 'contact_website', '') or ''
+        else:
+            # Fallback to AdminSettings for backward compatibility
+            contact_email = getattr(settings_obj, 'contact_email', '') or ''
+            contact_phone = getattr(settings_obj, 'contact_phone', '') or ''
+            contact_address = getattr(settings_obj, 'contact_address', '') or ''
+            contact_website = getattr(settings_obj, 'contact_website', '') or ''
+
         return JsonResponse({
             "success": True, 
             "site_name": getattr(settings_obj, 'site_name', '') or '',
             "logo_url": getattr(settings_obj, 'logo_url', '') or '',
-            "contact_email": getattr(settings_obj, 'contact_email', '') or '',
-            "contact_phone": getattr(settings_obj, 'contact_phone', '') or '',
-            "contact_address": getattr(settings_obj, 'contact_address', '') or '',
-            "contact_website": getattr(settings_obj, 'contact_website', '') or '',
+            "contact_email": contact_email,
+            "contact_phone": contact_phone,
+            "contact_address": contact_address,
+            "contact_website": contact_website,
             "providers_carousel_speed": getattr(settings_obj, 'providers_carousel_speed', 1500),
             "providers_logo_size": getattr(settings_obj, 'providers_logo_size', 80),
         }, status=200)
@@ -122,6 +141,9 @@ def get_privacy_policy(request):
         return JsonResponse({
             "success": True,
             "content": policy.content,
+            "meta_title": getattr(policy, 'meta_title', '') or '',
+            "meta_keywords": getattr(policy, 'meta_keywords', '') or '',
+            "meta_description": getattr(policy, 'meta_description', '') or '',
             "updated_at": policy.updated_at.isoformat() if policy.updated_at else None
         }, status=200)
     except Exception as e:
@@ -148,6 +170,9 @@ def update_privacy_policy(request):
             policy = PrivacyPolicy()
         
         policy.content = content
+        policy.meta_title = body.get("meta_title", policy.meta_title or "")
+        policy.meta_keywords = body.get("meta_keywords", policy.meta_keywords or "")
+        policy.meta_description = body.get("meta_description", policy.meta_description or "")
         policy.updated_at = datetime.utcnow()
         policy.save()
         
@@ -195,10 +220,171 @@ def update_terms_of_service(request):
             terms = TermsOfService()
         
         terms.content = content
+        terms.meta_title = body.get("meta_title", terms.meta_title or "")
+        terms.meta_keywords = body.get("meta_keywords", terms.meta_keywords or "")
+        terms.meta_description = body.get("meta_description", terms.meta_description or "")
         terms.updated_at = datetime.utcnow()
         terms.save()
         
         return JsonResponse({"success": True, "message": "Terms of service updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= REFUND & CANCELLATION POLICY =================
+@csrf_exempt
+def get_refund_cancellation_policy(request):
+    """Get refund & cancellation policy content (public endpoint)."""
+    try:
+        policy = RefundCancellationPolicy.objects.first()
+        if not policy:
+            policy = RefundCancellationPolicy(content="Refund & cancellation policy content will be updated by admin.")
+            policy.save()
+        
+        return JsonResponse({
+            "success": True,
+            "content": policy.content,
+            "meta_title": getattr(policy, 'meta_title', '') or '',
+            "meta_keywords": getattr(policy, 'meta_keywords', '') or '',
+            "meta_description": getattr(policy, 'meta_description', '') or '',
+            "updated_at": policy.updated_at.isoformat() if policy.updated_at else None
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_refund_cancellation_policy(request):
+    """Update refund & cancellation policy content (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        content = body.get("content", "")
+        
+        if not content:
+            return JsonResponse({"success": False, "error": "Content is required"}, status=400)
+        
+        policy = RefundCancellationPolicy.objects.first()
+        if not policy:
+            policy = RefundCancellationPolicy()
+        
+        policy.content = content
+        policy.meta_title = body.get("meta_title", policy.meta_title or "")
+        policy.meta_keywords = body.get("meta_keywords", policy.meta_keywords or "")
+        policy.meta_description = body.get("meta_description", policy.meta_description or "")
+        policy.updated_at = datetime.utcnow()
+        policy.save()
+        
+        return JsonResponse({"success": True, "message": "Refund & cancellation policy updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= DISCLAIMER =================
+@csrf_exempt
+def get_disclaimer(request):
+    """Get disclaimer content (public endpoint)."""
+    try:
+        disclaimer = Disclaimer.objects.first()
+        if not disclaimer:
+            disclaimer = Disclaimer(content="Disclaimer content will be updated by admin.")
+            disclaimer.save()
+        
+        return JsonResponse({
+            "success": True,
+            "content": disclaimer.content,
+            "updated_at": disclaimer.updated_at.isoformat() if disclaimer.updated_at else None
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_disclaimer(request):
+    """Update disclaimer content (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        content = body.get("content", "")
+        
+        if not content:
+            return JsonResponse({"success": False, "error": "Content is required"}, status=400)
+        
+        disclaimer = Disclaimer.objects.first()
+        if not disclaimer:
+            disclaimer = Disclaimer()
+        
+        disclaimer.content = content
+        disclaimer.meta_title = body.get("meta_title", disclaimer.meta_title or "")
+        disclaimer.meta_keywords = body.get("meta_keywords", disclaimer.meta_keywords or "")
+        disclaimer.meta_description = body.get("meta_description", disclaimer.meta_description or "")
+        disclaimer.updated_at = datetime.utcnow()
+        disclaimer.save()
+        
+        return JsonResponse({"success": True, "message": "Disclaimer updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= CONTACT US =================
+@csrf_exempt
+def get_contact_us(request):
+    """Get contact us details (public endpoint)."""
+    try:
+        contact = ContactUs.objects.first()
+        if not contact:
+            contact = ContactUs()
+            contact.save()
+        
+        return JsonResponse({
+            "success": True,
+            "contact_email": getattr(contact, 'contact_email', '') or '',
+            "contact_phone": getattr(contact, 'contact_phone', '') or '',
+            "contact_address": getattr(contact, 'contact_address', '') or '',
+            "contact_website": getattr(contact, 'contact_website', '') or '',
+            "meta_title": getattr(contact, 'meta_title', '') or '',
+            "meta_keywords": getattr(contact, 'meta_keywords', '') or '',
+            "meta_description": getattr(contact, 'meta_description', '') or '',
+            "updated_at": contact.updated_at.isoformat() if contact.updated_at else None
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_contact_us(request):
+    """Update contact us details (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+    
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        
+        contact = ContactUs.objects.first()
+        if not contact:
+            contact = ContactUs()
+        
+        contact.contact_email = body.get("contact_email", contact.contact_email or "")
+        contact.contact_phone = body.get("contact_phone", contact.contact_phone or "")
+        contact.contact_address = body.get("contact_address", contact.contact_address or "")
+        contact.contact_website = body.get("contact_website", contact.contact_website or "")
+        contact.meta_title = body.get("meta_title", contact.meta_title or "")
+        contact.meta_keywords = body.get("meta_keywords", contact.meta_keywords or "")
+        contact.meta_description = body.get("meta_description", contact.meta_description or "")
+        contact.updated_at = datetime.utcnow()
+        contact.save()
+        
+        return JsonResponse({"success": True, "message": "Contact us details updated successfully"}, status=200)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 
