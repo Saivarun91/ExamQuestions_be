@@ -511,9 +511,19 @@ def course_update(request, course_id):
         course.meta_description = data.get('meta_description')
 
         # Update extra details
-        for field in ["about", "eligibility", "exam_pattern", "difficulty", "duration", "passing_score", "why_matters"]:
+        for field in ["about", "eligibility", "exam_pattern", "difficulty", "duration", "passing_score", "why_matters", "pass_rate", "rating"]:
             if field in data:
-                setattr(course, field, data[field])
+                # Handle pass_rate and rating - allow null values
+                if field in ["pass_rate", "rating"]:
+                    if data[field] is not None and data[field] != "":
+                        if field == "pass_rate":
+                            setattr(course, field, int(data[field]))
+                        else:  # rating
+                            setattr(course, field, float(data[field]))
+                    else:
+                        setattr(course, field, None)
+                else:
+                    setattr(course, field, data[field])
 
         # List fields (excluding practice_tests_list - handled separately)
         for field in ["whats_included", "topics", "testimonials", "faqs", "test_instructions"]:

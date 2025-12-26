@@ -690,16 +690,10 @@ def get_questions(request):
         # Filter questions by PracticeTest
         all_questions = list(Question.objects.filter(category=practice_test))
         
-        # Limit questions to the test's question count (if specified)
-        # If test has 20 questions but CSV has 50, only show 20 questions
-        question_limit = practice_test.questions if practice_test.questions > 0 else len(all_questions)
-        
-        # Shuffle questions randomly so different sets are shown
-        import random
-        random.shuffle(all_questions)
-        
-        # Take only the limited number of questions
-        questions = all_questions[:question_limit]
+        # For admin view, show ALL questions (no limit, no shuffle)
+        # The test limit is only used during actual test taking, not in admin view
+        # Admin needs to see all uploaded questions to manage them
+        questions = all_questions
 
         question_list = []
         for q in questions:
@@ -969,7 +963,27 @@ def upload_questions_csv(request):
 
         # Read CSV content first (before saving to disk)
         csv_file.seek(0)  # Reset file pointer to beginning
-        csv_data = csv_file.read().decode("utf-8")
+        try:
+            raw = csv_file.read()
+            # Try multiple encodings to handle different CSV formats
+            csv_data = None
+            for encoding in ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']:
+                try:
+                    csv_data = raw.decode(encoding)
+                    print(f"✅ CSV decoded with {encoding}")
+                    break
+                except (UnicodeDecodeError, AttributeError):
+                    continue
+            if not csv_data:
+                return JsonResponse({
+                    "success": False,
+                    "message": "CSV encoding not supported. Please save the file as UTF-8."
+                }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                "success": False,
+                "message": f"Error reading CSV file: {str(e)}"
+            }, status=400)
         
         # Save file to disk
         filename = f"{timezone.now().strftime('%Y%m%d%H%M%S')}_{csv_file.name}"
@@ -992,7 +1006,19 @@ def upload_questions_csv(request):
         csv_doc.save()
 
         # Parse CSV content
-        csv_reader = csv.DictReader(io.StringIO(csv_data))
+        try:
+            csv_reader = csv.DictReader(io.StringIO(csv_data))
+            # Check if CSV has required columns
+            if not csv_reader.fieldnames:
+                return JsonResponse({
+                    "success": False,
+                    "message": "CSV file appears to be empty or invalid"
+                }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                "success": False,
+                "message": f"Error parsing CSV file: {str(e)}"
+            }, status=400)
 
         # Check if test has a question limit set
         # Reload test to get current questions value
@@ -1009,39 +1035,145 @@ def upload_questions_csv(request):
         # Convert to list to count total rows
         csv_rows = list(csv_reader)
         total_rows = len(csv_rows)
+        
+        # Log CSV headers for debugging (first row only)
+        if csv_rows and len(csv_rows) > 0:
+            print(f"📋 CSV Headers found: {list(csv_rows[0].keys())}")
 
         for row_num, row in enumerate(csv_rows, start=1):
-            # If test has a question limit, stop creating questions once we reach it
+            # Check test limit BEFORE processing (only skip if we've already reached the limit)
+            # This allows us to create questions up to the limit
             if question_limit is not None:
-                # Check if we've reached the limit (current + newly created)
+                # Check if we've already reached the limit (current + newly created)
                 if (current_question_count + questions_created) >= question_limit:
-                    # Count remaining rows as skipped
+                    # Count this and remaining rows as skipped
                     questions_skipped = total_rows - row_num + 1
                     break  # Stop processing more rows
+            
             try:
-                row = {k.strip(): v.strip() for k, v in row.items() if k and v}
+                # Skip empty rows
+                if not any(v and str(v).strip() for v in row.values()):
+                    continue
+                # Normalize row keys to lowercase for case-insensitive matching
+                row_normalized = {}
+                for k, v in row.items():
+                    if k:  # Only process non-empty keys
+                        key_normalized = k.strip().lower()
+                        if v is None:
+                            row_normalized[key_normalized] = ""
+                        else:
+                            row_normalized[key_normalized] = str(v).strip() if v else ""
+                
+                # Helper function to get value with multiple possible keys (case-insensitive)
+                def get_value(*keys):
+                    for key in keys:
+                        key_lower = key.lower()
+                        if key_lower in row_normalized:
+                            val = row_normalized[key_lower]
+                            if val and str(val).strip():
+                                return str(val).strip()
+                    return ""
 
                 # Expected columns: question_text, question_type, options, correct_answer/correct_answers
-                question_text = row.get("question_text", "")
-                question_type = row.get("question_type", "single")
+                # Handle "Question" column (case-insensitive)
+                question_text = get_value("question_text", "question", "question text")
+                if not question_text:
+                    # Debug: show available keys for first row
+                    if row_num == 1:
+                        print(f"🔍 Row 1 - Available keys: {list(row_normalized.keys())}")
+                        print(f"🔍 Row 1 - Looking for 'question' in keys: {[k for k in row_normalized.keys() if 'question' in k]}")
+                    raise ValueError("Missing 'Question' column. Please ensure your CSV has a 'Question' column.")
                 
-                # Handle both semicolon and pipe-separated options
-                # Convert to list of dicts with 'text' key (as required by Question model)
-                options_str = row.get("options", "")
-                if ";" in options_str:
-                    options_raw = [opt.strip() for opt in options_str.split(";") if opt.strip()]
+                question_type = get_value("question_type", "question type", "type", "qtype") or "single"
+                
+                # Handle both semicolon and pipe-separated options OR individual option columns
+                options_str = get_value("options", "option", "answer options")
+                options_raw = []
+                option_explanations = {}
+                
+                if options_str and str(options_str).strip():
+                    # Try pipe separator first (most common)
+                    if "|" in options_str:
+                        options_raw = [opt.strip() for opt in options_str.split("|") if opt.strip()]
+                    # Then try semicolon
+                    elif ";" in options_str:
+                        options_raw = [opt.strip() for opt in options_str.split(";") if opt.strip()]
+                    # Finally try comma
+                    elif "," in options_str:
+                        options_raw = [opt.strip() for opt in options_str.split(",") if opt.strip()]
+                    else:
+                        # Single option
+                        options_raw = [options_str.strip()]
                 else:
-                    options_raw = [opt.strip() for opt in options_str.split("|") if opt.strip()]
+                    # Try individual option columns: "Answer Option 1", "Answer Option 2", etc.
+                    for num in range(1, 7):  # Support up to 6 options
+                        opt_val = get_value(
+                            f"answer option {num}",
+                            f"answer option{num}",
+                            f"answer_option_{num}",
+                            f"answer_option{num}",
+                            f"option {num}",
+                            f"option_{num}",
+                            f"option{num}"
+                        )
+                        if opt_val:
+                            options_raw.append(opt_val)
+                            # Also get explanation if available
+                            exp_val = get_value(
+                                f"explanation {num}",
+                                f"explanation_{num}",
+                                f"explanation{num}"
+                            )
+                            if exp_val:
+                                option_explanations[len(options_raw) - 1] = exp_val
+                    
+                    # Debug for first row
+                    if row_num == 1:
+                        print(f"🔍 Row 1 - Found {len(options_raw)} options from individual columns")
+                        if len(options_raw) > 0:
+                            print(f"🔍 Row 1 - First 3 options: {options_raw[:3]}")
+                        else:
+                            print(f"🔍 Row 1 - Available keys with 'option': {[k for k in row_normalized.keys() if 'option' in k]}")
+                            # Show actual values for first 3 option columns
+                            for num in range(1, 4):
+                                key = f"answer option {num}"
+                                val = row_normalized.get(key, 'NOT FOUND')
+                                print(f"🔍 Row 1 - '{key}' = '{val}'")
                 
                 # Convert to list of dicts format required by Question model
-                options = [{"text": opt} for opt in options_raw]
+                options = []
+                for idx, opt in enumerate(options_raw):
+                    if opt and str(opt).strip():
+                        opt_dict = {"text": str(opt).strip()}
+                        # Add explanation if available
+                        if idx in option_explanations:
+                            opt_dict["explanation"] = option_explanations[idx]
+                        options.append(opt_dict)
+                
+                # Debug for first row
+                if row_num == 1:
+                    print(f"🔍 Row 1 - Final options count: {len(options)}")
+                    if len(options) > 0:
+                        print(f"🔍 Row 1 - First option: {options[0]}")
                 
                 # Handle both correct_answer (singular) and correct_answers (plural)
-                correct_answer_str = row.get("correct_answer", "") or row.get("correct_answers", "")
+                correct_answer_str = get_value("correct_answers", "correct_answer", "correct answers", "correct answer", "answer")
                 
                 # Parse correct answers - handle both comma/pipe separated and single values
+                # Use string split instead of re.split to avoid scope issues
                 if "," in correct_answer_str or "|" in correct_answer_str:
-                    correct_answer_list = [x.strip() for x in re.split(r"[|,]", correct_answer_str) if x.strip()]
+                    # Split by pipe first, then by comma, and flatten
+                    if "|" in correct_answer_str:
+                        parts = correct_answer_str.split("|")
+                        correct_answer_list = []
+                        for part in parts:
+                            if "," in part:
+                                correct_answer_list.extend([x.strip() for x in part.split(",") if x.strip()])
+                            else:
+                                if part.strip():
+                                    correct_answer_list.append(part.strip())
+                    else:
+                        correct_answer_list = [x.strip() for x in correct_answer_str.split(",") if x.strip()]
                 else:
                     correct_answer_list = [correct_answer_str.strip()] if correct_answer_str.strip() else []
                 
@@ -1073,27 +1205,60 @@ def upload_questions_csv(request):
                         if not found:
                             raise ValueError(f"Could not find option matching letter '{ans}'")
                     elif ans.isdigit():
-                        # If answer is a number, use it as index directly
+                        # If answer is a number, handle both 0-based and 1-based indexing
                         idx = int(ans)
-                        if 0 <= idx < len(options):
+                        # Try 1-based first (more common in CSV files: 1, 2, 3, 4)
+                        if 1 <= idx <= len(options):
+                            correct_answers.append(str(idx - 1))
+                        # Then try 0-based (0, 1, 2, 3)
+                        elif 0 <= idx < len(options):
                             correct_answers.append(str(idx))
                         else:
-                            raise ValueError(f"Invalid option index: {idx}")
+                            raise ValueError(f"Invalid option index: {idx} (valid range: 0-{len(options)-1} or 1-{len(options)})")
                     else:
-                        # Answer is text - find matching option index
+                        # Answer is text - find matching option index (case-insensitive)
                         found = False
+                        ans_lower = ans.lower().strip()
                         for idx, opt_dict in enumerate(options):
                             opt_text = opt_dict.get("text", "").strip()
-                            if opt_text == ans or opt_text.endswith(ans) or ans in opt_text:
+                            opt_text_lower = opt_text.lower()
+                            # Try exact match first
+                            if opt_text_lower == ans_lower:
+                                correct_answers.append(str(idx))
+                                found = True
+                                break
+                            # Try if answer is contained in option text
+                            elif ans_lower in opt_text_lower:
+                                correct_answers.append(str(idx))
+                                found = True
+                                break
+                            # Try if option text is contained in answer
+                            elif opt_text_lower in ans_lower:
                                 correct_answers.append(str(idx))
                                 found = True
                                 break
                         if not found:
-                            # If not found, store as-is (might be used for matching)
-                            correct_answers.append(ans)
+                            # Try matching by removing common prefixes
+                            ans_clean = ans_lower.replace("option ", "").replace("answer ", "").strip()
+                            for idx, opt_dict in enumerate(options):
+                                opt_text = opt_dict.get("text", "").strip().lower()
+                                opt_clean = opt_text.replace("option ", "").replace("answer ", "").strip()
+                                if opt_clean == ans_clean or ans_clean in opt_clean or opt_clean in ans_clean:
+                                    correct_answers.append(str(idx))
+                                    found = True
+                                    break
+                        if not found:
+                            # Last resort: try matching by letter position (A=0, B=1, C=2, etc.)
+                            if len(ans) == 1 and ans.isalpha():
+                                letter_idx = ord(ans.upper()) - ord('A')
+                                if 0 <= letter_idx < len(options):
+                                    correct_answers.append(str(letter_idx))
+                                    found = True
+                        if not found:
+                            raise ValueError(f"Could not find option matching answer '{ans}'. Available options: {[opt.get('text', '')[:50] for opt in options]}")
                 
-                marks = int(row.get("marks", 1)) if row.get("marks") else 1
-                explanation = row.get("explanation", "")
+                marks = int(get_value("marks", "mark", "points") or "1")
+                explanation = get_value("explanation", "explain", "overall explanation", "overall_explanation")
 
                 if not question_text:
                     raise ValueError("Missing question_text")
@@ -1121,11 +1286,21 @@ def upload_questions_csv(request):
                     explanation=explanation,
                 )
                 questions_created += 1
+                
+                # Check test limit AFTER successfully creating a question
+                if question_limit is not None:
+                    # Check if we've reached the limit (current + newly created)
+                    if (current_question_count + questions_created) >= question_limit:
+                        # Count remaining rows as skipped
+                        questions_skipped = total_rows - row_num
+                        break  # Stop processing more rows
             except Exception as e:
-                errors.append(f"Row {row_num} Error: {str(e)}")
+                error_msg = f"Row {row_num}: {str(e)}"
+                errors.append(error_msg)
                 import traceback
-                print(f"Error in row {row_num}: {str(e)}")
-                print(traceback.format_exc())
+                print(f"❌ Error in row {row_num}: {str(e)}")
+                if row_num <= 3:  # Only print traceback for first 3 errors to avoid spam
+                    print(traceback.format_exc())
 
         # Auto-update test question count after CSV upload
         # Only update if questions field is 0 or not set (preserve admin-set limit)
