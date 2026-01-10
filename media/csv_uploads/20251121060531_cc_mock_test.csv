@@ -1,0 +1,31 @@
+question_text,question_type,options,correct_answer,marks,explanation
+What is SaaS in cloud computing?,MCQ,A) Software as a Service; B) System as a Service; C) Storage as a Service; D) Server as a Service,A,1,SaaS provides software applications over the internet.
+Which of the following is NOT a cloud service model?,MCQ,A) IaaS; B) PaaS; C) CaaS; D) SaaS,C,1,CaaS is not a standard cloud service model.
+Which company offers AWS cloud services?,MCQ,A) Microsoft; B) Amazon; C) Google; D) IBM,B,1,AWS is provided by Amazon.
+What is the main advantage of cloud computing?,MCQ,A) Increased cost; B) Limited scalability; C) On-demand resource access; D) Local storage only,C,1,Cloud computing allows on-demand scalability and flexibility.
+Which protocol is commonly used for cloud storage?,MCQ,A) HTTP; B) FTP; C) TCP; D) IP,A,1,HTTP is used for cloud-based access to storage services.
+What does PaaS stand for?,MCQ,A) Platform as a Software; B) Platform as a Service; C) Product as a Service; D) Processing as a Service,B,1,PaaS provides a platform to develop and deploy applications.
+Which cloud deployment model combines private and public clouds?,MCQ,A) Private; B) Hybrid; C) Public; D) Community,B,1,Hybrid cloud integrates both private and public infrastructures.
+Which of the following is an example of IaaS?,MCQ,A) Google App Engine; B) Microsoft Azure VM; C) Salesforce; D) Dropbox,B,1,Azure VM is an IaaS service.
+Which of these is a cloud storage service?,MCQ,A) OneDrive; B) Gmail; C) Slack; D) Zoom,A,1,OneDrive is a cloud storage platform.
+Which of the following is a characteristic of cloud computing?,MCQ,A) Manual provisioning; B) Resource pooling; C) Fixed resources; D) High latency,B,1,Resource pooling is a key cloud feature.
+Which company provides Google Cloud Platform?,MCQ,A) IBM; B) Oracle; C) Google; D) Dell,C,1,Google Cloud Platform is from Google.
+What is virtualization in cloud computing?,MCQ,A) Combining physical servers; B) Creating virtual versions of resources; C) Physical data replication; D) Network configuration,B,1,Virtualization creates virtual resources for efficiency.
+Which of these is NOT an example of cloud storage?,MCQ,A) Google Drive; B) Dropbox; C) AWS S3; D) MySQL,D,1,"MySQL is a database, not a cloud storage service."
+Which of the following describes elasticity in cloud computing?,MCQ,A) Fixed resource allocation; B) Automatic scaling based on demand; C) Static storage; D) Manual configuration,B,1,Elasticity allows automatic scaling of resources.
+Which of the following is an open-source cloud platform?,MCQ,A) OpenStack; B) Azure; C) AWS; D) IBM Cloud,A,1,OpenStack is an open-source platform.
+What is a benefit of using cloud computing for businesses?,MCQ,A) Higher hardware cost; B) Increased scalability; C) Reduced availability; D) Limited accessibility,B,1,Scalability is a major business benefit.
+Which of the following is NOT a deployment model?,MCQ,A) Public; B) Private; C) Distributed; D) Hybrid,C,1,Distributed is not a standard deployment model.
+What does cloud 'multi-tenancy' mean?,MCQ,A) One user per cloud; B) Multiple users share resources; C) No sharing allowed; D) Dedicated servers only,B,1,Multi-tenancy means shared resources among users.
+Which type of service provides development tools over the internet?,MCQ,A) IaaS; B) PaaS; C) SaaS; D) DaaS,B,1,PaaS provides tools for developers.
+Which of these is a cloud-based collaboration tool?,MCQ,A) Dropbox; B) Microsoft Teams; C) Adobe Photoshop; D) VMware,B,1,Microsoft Teams is a cloud collaboration platform.
+Which of these best describes 'public cloud'?,MCQ,A) Owned by a single organization; B) Open for public use; C) Local deployment; D) Restricted to employees,B,1,Public clouds are accessible by the general public.
+Which of the following is true about private cloud?,MCQ,A) Shared with everyone; B) Owned by one organization; C) Publicly available; D) Unsecure,B,1,Private cloud serves a single organization.
+Which of these companies offers Azure cloud?,MCQ,A) IBM; B) Microsoft; C) Amazon; D) Oracle,B,1,Azure is by Microsoft.
+Which of these is NOT a cloud provider?,MCQ,A) AWS; B) Google Cloud; C) Microsoft Azure; D) Linux,D,1,Linux is not a cloud provider.
+What does DaaS stand for?,MCQ,A) Database as a Service; B) Desktop as a Service; C) Data as a Service; D) Device as a Service,C,1,DaaS refers to Data as a Service.
+Which of the following is a database cloud service?,MCQ,A) Amazon RDS; B) Dropbox; C) Slack; D) Zoom,A,1,Amazon RDS provides database services on the cloud.
+Which of the following is a cloud monitoring service?,MCQ,A) CloudWatch; B) Slack; C) GitHub; D) Trello,A,1,AWS CloudWatch is a monitoring tool.
+Which of these ensures secure communication in the cloud?,MCQ,A) SSL/TLS; B) HTTP; C) FTP; D) IP,A,1,SSL/TLS ensures secure encrypted connections.
+What is the main purpose of cloud load balancing?,MCQ,A) Increase latency; B) Distribute workload evenly; C) Reduce scalability; D) Limit access,B,1,Load balancing distributes traffic efficiently.
+Which is a key characteristic of cloud computing?,MCQ,A) On-demand self-service; B) Manual provisioning; C) Static scaling; D) Offline-only access,A,1,On-demand self-service is a core cloud principle.

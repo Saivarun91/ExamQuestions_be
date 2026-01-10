@@ -1,0 +1,97 @@
+from mongoengine import Document, StringField, BooleanField, IntField, DateTimeField, FloatField, ListField, EmbeddedDocument, EmbeddedDocumentField
+from datetime import datetime
+
+class AdminSettings(Document):
+    site_name = StringField(default="PrepTara")
+    admin_email = StringField(default="admin@preptara.com")
+    logo_url = StringField(default="")
+    email_notifications = BooleanField(default=True)
+    maintenance_mode = BooleanField(default=False)
+    default_user_role = StringField(default="user", choices=["user", "moderator", "admin"])
+    session_timeout = IntField(default=30)
+    
+    # Contact Details Fields
+    contact_email = StringField(default="")
+    contact_phone = StringField(default="")
+    contact_address = StringField(default="")
+    contact_website = StringField(default="")
+    
+    # Popular Providers Carousel Settings
+    providers_carousel_speed = IntField(default=1500)  # Auto-scroll interval in milliseconds (default 1.5 seconds)
+    providers_logo_size = IntField(default=80)  # Logo max size in pixels (default 80px)
+    
+    # Social Media URLs
+    social_facebook_url = StringField(default="")
+    social_twitter_url = StringField(default="")
+    social_linkedin_url = StringField(default="")
+    social_youtube_url = StringField(default="")
+    social_instagram_url = StringField(default="")
+
+    meta = {'collection': 'admin_settings', 'strict': False}
+
+
+class PrivacyPolicy(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'privacy_policy'}
+
+
+class TermsOfService(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'terms_of_service'}
+
+
+class RefundCancellationPolicy(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'refund_cancellation_policy'}
+
+
+class Disclaimer(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'disclaimer'}
+
+
+class ContactUs(Document):
+    contact_email = StringField(default="")
+    contact_phone = StringField(default="")
+    contact_address = StringField(default="")
+    contact_website = StringField(default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'contact_us'}
+
+
+class SitemapURL(EmbeddedDocument):
+    url = StringField(required=True)
+    priority = FloatField(default=0.5, min_value=0.0, max_value=1.0)
+    changefreq = StringField(default="monthly", choices=["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"])
+    lastmod = DateTimeField(default=datetime.utcnow)
+
+
+class Sitemap(Document):
+    urls = ListField(EmbeddedDocumentField(SitemapURL), default=list)
+    updated_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {'collection': 'sitemap'}
