@@ -173,3 +173,13 @@ RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET')
 # =================== RECAPTCHA ===================
 RECAPTCHA_SECRET_KEY = os.environ.get('RECAPTCHA_SECRET_KEY')
 RECAPTCHA_VERIFY_URL = os.environ.get('RECAPTCHA_VERIFY_URL')
+
+# =================== GEMINI API KEY ===================
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+
+# =================== OPENAI API KEY ===================
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
+# =================== QUESTION CRAFTSMAN CONFIG ===================
+QUESTION_CRAFTSMAN_CONFIG = os.environ.get('QUESTION_CRAFTSMAN_CONFIG')
+

@@ -15,6 +15,9 @@ class QuestionSerializer(serializers.Serializer):
     tags = serializers.ListField(child=serializers.CharField(), required=False)
     
     def to_representation(self, instance):
+        # Get status field (dynamic field, may not exist)
+        status = getattr(instance, 'status', None)
+        
         return {
             'id': str(instance.id),
             'course_id': str(instance.course.id) if instance.course else None,
@@ -26,6 +29,7 @@ class QuestionSerializer(serializers.Serializer):
             'question_image': instance.question_image or None,
             'marks': instance.marks or 1,
             'tags': instance.tags or [],
+            'status': status,  # Include status field (dynamic field)
             'created_at': instance.created_at.isoformat() if instance.created_at else None,
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else None,
         }

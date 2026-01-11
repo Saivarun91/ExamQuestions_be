@@ -15,6 +15,126 @@ import io
 import datetime
 import json
 
+# Try to import google.generativeai at module level for better error handling
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+    print("[views.py] Successfully imported google.generativeai at module level")
+except ImportError as e:
+    GEMINI_AVAILABLE = False
+    genai = None
+    print(f"[views.py] Failed to import google.generativeai at module level: {e}")
+
+# Try to import openai at module level for better error handling
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+    print("[views.py] Successfully imported openai at module level")
+except ImportError as e:
+    OPENAI_AVAILABLE = False
+    openai = None
+    print(f"[views.py] Failed to import openai at module level: {e}")
+
+
+def get_available_gemini_models(genai_client):
+    """
+    Get list of available Gemini models from the API.
+    Returns a list of tuples: (full_name, short_name) for models that support generateContent.
+    """
+    try:
+        models = genai_client.list_models()
+        available_models = []
+        for model in models:
+            # Filter for models that support generateContent
+            if 'generateContent' in model.supported_generation_methods:
+                full_name = model.name  # e.g., "models/gemini-1.5-flash"
+                # Extract just the model name (remove 'models/' prefix if present)
+                if '/' in full_name:
+                    short_name = full_name.split('/')[-1]
+                else:
+                    short_name = full_name
+                available_models.append((full_name, short_name))
+        return available_models
+    except Exception as e:
+        print(f"[get_available_gemini_models] Error listing models: {e}")
+        return []
+
+
+def get_valid_gemini_model(model_name=None, genai_client=None):
+    """
+    Get a valid Gemini model name by checking available models from the API.
+    Returns a valid Gemini model name that supports generateContent.
+    """
+    available_models = []
+    
+    # Try to get available models from API
+    available_models_list = []  # List of (full_name, short_name) tuples
+    try:
+        if genai_client:
+            available_models_list = get_available_gemini_models(genai_client)
+        elif genai and hasattr(genai, 'list_models'):
+            # If genai is configured, try to list models directly
+            try:
+                models = genai.list_models()
+                for model in models:
+                    if 'generateContent' in model.supported_generation_methods:
+                        full_name = model.name
+                        if '/' in full_name:
+                            short_name = full_name.split('/')[-1]
+                        else:
+                            short_name = full_name
+                        available_models_list.append((full_name, short_name))
+            except Exception as e:
+                print(f"[get_valid_gemini_model] Error listing models: {e}")
+    except Exception as e:
+        print(f"[get_valid_gemini_model] Error getting available models: {e}")
+    
+    if available_models_list:
+        # Extract just short names for easier matching
+        short_names = [short for _, short in available_models_list]
+        print(f"[get_valid_gemini_model] Available models: {short_names}")
+        
+        # Priority list of models to try (in order of preference)
+        preferred_models = [
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-flash-001',
+            'gemini-1.5-pro-001',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro',
+        ]
+        
+        # If specific model requested, check if it's available
+        if model_name:
+            # Check exact match in short names
+            for full_name, short_name in available_models_list:
+                if model_name == short_name or model_name == full_name:
+                    # Return short name (GenerativeModel accepts both, but short is cleaner)
+                    return short_name
+            
+            # Check if any available model contains the requested name
+            for full_name, short_name in available_models_list:
+                if model_name in short_name or model_name in full_name:
+                    return short_name
+        
+        # Try preferred models in order
+        for preferred in preferred_models:
+            for full_name, short_name in available_models_list:
+                if preferred == short_name or preferred in short_name:
+                    return short_name
+        
+        # Use first available model as fallback (return short name)
+        if available_models_list:
+            return available_models_list[0][1]  # Return short name
+    
+    # Fallback: return common model names (will be validated by API call)
+    if model_name:
+        return model_name
+    
+    # Default fallback - try common model names
+    return 'gemini-1.5-flash'
+
 
 # ✅ Get all questions for a course (Admin)
 @api_view(['GET'])
@@ -624,4 +744,1479 @@ def get_question(request, question_id):
         return Response({"error": "Question not found"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Get configuration (Admin)
+@api_view(['GET'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def get_configuration(request):
+    """Admin: Get parsing configuration and prompts"""
+    try:
+        from settings_app.models import AdminSettings
+        
+        # Get or create AdminSettings
+        settings_obj = AdminSettings.objects.first()
+        if not settings_obj:
+            settings_obj = AdminSettings()
+            settings_obj.save()
+        
+        # Retrieve saved configuration from AdminSettings
+        # Since AdminSettings has strict=False, we can store additional fields
+        saved_prompts = getattr(settings_obj, 'prompts', None)
+        
+        # Ensure prompts is a dictionary
+        if saved_prompts is None:
+            saved_prompts = {}
+        elif not isinstance(saved_prompts, dict):
+            # If it's not a dict, try to convert it
+            try:
+                if isinstance(saved_prompts, str):
+                    saved_prompts = json.loads(saved_prompts)
+                else:
+                    saved_prompts = {}
+            except Exception as e:
+                print(f"[get_configuration] Error parsing saved_prompts: {e}")
+                saved_prompts = {}
+        
+        print(f"[get_configuration] Saved prompts from database (type: {type(saved_prompts)}): {saved_prompts}")
+        
+        # Default prompts structure with descriptions and versions
+        default_prompts = {
+            "prompt1": {
+                "prompt": "",
+                "version": "v2.1.0",
+                "description": "Extract individual questions from uploaded document",
+                "lastUpdated": ""
+            },
+            "prompt2": {
+                "prompt": "",
+                "version": "v1.8.0",
+                "description": "Create new questions based on parsed content",
+                "lastUpdated": ""
+            },
+            "prompt3": {
+                "prompt": "",
+                "version": "v1.5.2",
+                "description": "Verify accuracy of generated questions",
+                "lastUpdated": ""
+            },
+            "prompt4": {
+                "prompt": "",
+                "version": "v1.2.0",
+                "description": "Format questions for export",
+                "lastUpdated": ""
+            }
+        }
+        
+        # Return saved prompts exactly as they are, only fill in defaults for missing fields
+        final_prompts = {}
+        for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+            try:
+                if key in saved_prompts and isinstance(saved_prompts[key], dict):
+                    # Use saved data as-is, only fill missing fields with defaults
+                    final_prompts[key] = saved_prompts[key].copy()
+                    
+                    # Only use defaults if the field is missing or empty
+                    if 'prompt' not in final_prompts[key]:
+                        final_prompts[key]['prompt'] = ''
+                    elif final_prompts[key]['prompt'] is None:
+                        final_prompts[key]['prompt'] = ''
+                    
+                    if 'version' not in final_prompts[key] or not final_prompts[key]['version']:
+                        final_prompts[key]['version'] = default_prompts[key].get('version', '')
+                    elif final_prompts[key]['version'] is None:
+                        final_prompts[key]['version'] = default_prompts[key].get('version', '')
+                    
+                    if 'description' not in final_prompts[key] or not final_prompts[key]['description']:
+                        final_prompts[key]['description'] = default_prompts[key].get('description', '')
+                    elif final_prompts[key]['description'] is None:
+                        final_prompts[key]['description'] = default_prompts[key].get('description', '')
+                    
+                    if 'lastUpdated' not in final_prompts[key]:
+                        final_prompts[key]['lastUpdated'] = ''
+                    elif final_prompts[key]['lastUpdated'] is None:
+                        final_prompts[key]['lastUpdated'] = ''
+                else:
+                    # No saved data, use defaults
+                    final_prompts[key] = {
+                        'prompt': '',
+                        'version': default_prompts[key].get('version', ''),
+                        'description': default_prompts[key].get('description', ''),
+                        'lastUpdated': ''
+                    }
+            except Exception as prompt_error:
+                print(f"[get_configuration] Error processing {key}: {prompt_error}")
+                # Use defaults if there's an error
+                final_prompts[key] = {
+                    'prompt': '',
+                    'version': default_prompts[key].get('version', ''),
+                    'description': default_prompts[key].get('description', ''),
+                    'lastUpdated': ''
+                }
+        
+        # Get other config values with proper defaults
+        parsing_instructions = getattr(settings_obj, 'parsing_instructions', None)
+        if parsing_instructions is None:
+            parsing_instructions = ''
+        
+        max_retry_count = getattr(settings_obj, 'max_retry_count', None)
+        if max_retry_count is None:
+            max_retry_count = 3
+        
+        temperature = getattr(settings_obj, 'temperature', None)
+        if temperature is None:
+            temperature = 0
+        
+        model_selector = getattr(settings_obj, 'model_selector', None)
+        if model_selector is None:
+            model_selector = 'gpt-4'
+        
+        # Get API keys (for display/validation, but don't send full keys for security)
+        gemini_api_key = getattr(settings_obj, 'gemini_api_key', '') or ''
+        openai_api_key = getattr(settings_obj, 'openai_api_key', '') or ''
+        
+        # Only send masked keys (show first 4 and last 4 characters for verification)
+        def mask_api_key(key):
+            if not key or len(key) < 8:
+                return ''
+            return f"{key[:4]}...{key[-4:]}" if len(key) > 8 else '***'
+        
+        config = {
+            "parsing_instructions": parsing_instructions or '',
+            "max_retry_count": max_retry_count,
+            "temperature": temperature,
+            "model_selector": model_selector or 'gpt-4',
+            "prompts": final_prompts,
+            "gemini_api_key": mask_api_key(gemini_api_key),  # Masked for security
+            "openai_api_key": mask_api_key(openai_api_key),  # Masked for security
+            "gemini_api_key_set": bool(gemini_api_key),  # Boolean to show if key is set
+            "openai_api_key_set": bool(openai_api_key)   # Boolean to show if key is set
+        }
+        
+        try:
+            print(f"[get_configuration] Returning config with prompts: {json.dumps(final_prompts, indent=2, default=str)}")
+        except Exception as log_error:
+            print(f"[get_configuration] Error logging prompts: {log_error}")
+        
+        return Response({
+            "success": True,
+            "config": config
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"[get_configuration] ERROR: {error_msg}")
+        print(traceback.format_exc())
+        return Response({"success": False, "error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Save configuration (Admin)
+@api_view(['POST'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def save_configuration(request):
+    """Admin: Save parsing configuration and prompts"""
+    try:
+        from settings_app.models import AdminSettings
+        import json
+        
+        data = request.data
+        
+        # DEBUG: Log what we're receiving
+        print(f"[save_configuration] ===== DEBUG START =====")
+        print(f"[save_configuration] Request data type: {type(data)}")
+        print(f"[save_configuration] Request data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        print(f"[save_configuration] Full request data: {json.dumps(data, indent=2, default=str)}")
+        
+        # Check if prompts are in the request
+        if 'prompts' in data:
+            print(f"[save_configuration] ✅ 'prompts' key found in request data")
+            print(f"[save_configuration] Prompts data type: {type(data.get('prompts'))}")
+            print(f"[save_configuration] Prompts data: {json.dumps(data.get('prompts'), indent=2, default=str)}")
+        else:
+            print(f"[save_configuration] ❌ 'prompts' key NOT found in request data")
+            print(f"[save_configuration] Available keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+        
+        # Get or create AdminSettings
+        settings_obj = AdminSettings.objects.first()
+        if not settings_obj:
+            settings_obj = AdminSettings()
+            print(f"[save_configuration] Created new AdminSettings object")
+        else:
+            print(f"[save_configuration] Found existing AdminSettings object")
+        
+        # Save configuration fields (AdminSettings has strict=False, so we can add these fields)
+        if 'parsing_instructions' in data:
+            settings_obj.parsing_instructions = data.get('parsing_instructions', '') or ''
+        if 'max_retry_count' in data:
+            settings_obj.max_retry_count = int(data.get('max_retry_count', 3))
+        if 'temperature' in data:
+            settings_obj.temperature = float(data.get('temperature', 0))
+        if 'model_selector' in data:
+            settings_obj.model_selector = data.get('model_selector', 'gpt-4') or 'gpt-4'
+        if 'gemini_api_key' in data:
+            settings_obj.gemini_api_key = data.get('gemini_api_key', '') or ''
+        if 'openai_api_key' in data:
+            settings_obj.openai_api_key = data.get('openai_api_key', '') or ''
+        if 'prompts' in data:
+            # DEBUG: Log prompts processing
+            print(f"[save_configuration] ===== PROCESSING PROMPTS =====")
+            
+            # Ensure prompts is a dictionary
+            prompts_data = data.get('prompts', {})
+            print(f"[save_configuration] Raw prompts_data type: {type(prompts_data)}")
+            print(f"[save_configuration] Raw prompts_data: {prompts_data}")
+            
+            if isinstance(prompts_data, str):
+                # If it's a string, try to parse it as JSON
+                print(f"[save_configuration] Prompts data is a string, attempting to parse JSON...")
+                try:
+                    prompts_data = json.loads(prompts_data)
+                    print(f"[save_configuration] ✅ Successfully parsed prompts string to dict")
+                except Exception as parse_error:
+                    print(f"[save_configuration] ❌ Error parsing prompts string: {parse_error}")
+                    prompts_data = {}
+            elif isinstance(prompts_data, dict):
+                print(f"[save_configuration] ✅ Prompts data is already a dict")
+            else:
+                print(f"[save_configuration] ⚠️ Prompts data is unexpected type: {type(prompts_data)}")
+                prompts_data = {}
+            
+            print(f"[save_configuration] Processed prompts_data type: {type(prompts_data)}")
+            print(f"[save_configuration] Processed prompts_data keys: {list(prompts_data.keys()) if isinstance(prompts_data, dict) else 'N/A'}")
+            print(f"[save_configuration] Processed prompts_data: {json.dumps(prompts_data, indent=2, default=str)}")
+            
+            # Get existing prompts to preserve metadata
+            existing_prompts = getattr(settings_obj, 'prompts', {}) or {}
+            if not isinstance(existing_prompts, dict):
+                try:
+                    if isinstance(existing_prompts, str):
+                        existing_prompts = json.loads(existing_prompts)
+                    else:
+                        existing_prompts = {}
+                except:
+                    existing_prompts = {}
+            
+            # Default prompts structure (only for version and description if not provided)
+            default_prompts = {
+                "prompt1": {"version": "v2.1.0", "description": "Extract individual questions from uploaded document"},
+                "prompt2": {"version": "v1.8.0", "description": "Create new questions based on parsed content"},
+                "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"},
+                "prompt4": {"version": "v1.2.0", "description": "Format questions for export"}
+            }
+            
+            # Save prompts exactly as received from frontend, preserving only version/description if not provided
+            merged_prompts = {}
+            current_time = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            
+            for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+                # Start with existing saved data (if any)
+                if key in existing_prompts and isinstance(existing_prompts[key], dict):
+                    merged_prompts[key] = existing_prompts[key].copy()
+                else:
+                    merged_prompts[key] = {}
+                
+                # Now update with new data from request (new data takes priority)
+                # Save all fields exactly like version is saved - directly and simply
+                if key in prompts_data and isinstance(prompts_data[key], dict):
+                    print(f"[save_configuration] Processing {key} from prompts_data...")
+                    print(f"[save_configuration] {key} data: {json.dumps(prompts_data[key], indent=2, default=str)}")
+                    
+                    # Save prompt text exactly as received (same simple logic as version - save directly)
+                    if 'prompt' in prompts_data[key]:
+                        prompt_value = prompts_data[key].get('prompt', '') or ''
+                        old_prompt_value = merged_prompts[key].get('prompt', '') or ''
+                        print(f"[save_configuration] {key}: old_prompt='{old_prompt_value[:50] if old_prompt_value else ''}...', new_prompt='{prompt_value[:50] if prompt_value else ''}...'")
+                        merged_prompts[key]['prompt'] = prompt_value
+                        print(f"[save_configuration] {key}: Set prompt in merged_prompts, value length={len(prompt_value)}")
+                        # Update timestamp if prompt text changed and is not empty
+                        if prompt_value != old_prompt_value:
+                            if prompt_value and str(prompt_value).strip():
+                                merged_prompts[key]['lastUpdated'] = current_time
+                                print(f"[save_configuration] {key}: Updated lastUpdated to {current_time}")
+                    else:
+                        print(f"[save_configuration] {key}: 'prompt' key NOT found in prompts_data[{key}]")
+                    
+                    # Update version if provided (same simple logic - save directly)
+                    if 'version' in prompts_data[key]:
+                        version_value = prompts_data[key].get('version', '')
+                        if version_value:
+                            merged_prompts[key]['version'] = version_value
+                            print(f"[save_configuration] {key}: Set version to {version_value}")
+                    
+                    # Update description if provided
+                    if 'description' in prompts_data[key]:
+                        desc_value = prompts_data[key].get('description', '')
+                        if desc_value:
+                            merged_prompts[key]['description'] = desc_value
+                    
+                    # Update lastUpdated if explicitly provided
+                    if 'lastUpdated' in prompts_data[key] and prompts_data[key]['lastUpdated']:
+                        merged_prompts[key]['lastUpdated'] = prompts_data[key]['lastUpdated']
+                    
+                    print(f"[save_configuration] {key}: Final merged_prompts[{key}] = {json.dumps(merged_prompts[key], indent=2, default=str)}")
+                else:
+                    print(f"[save_configuration] {key}: NOT in prompts_data or not a dict")
+                
+                # Ensure required fields exist (use defaults only if not set)
+                if 'version' not in merged_prompts[key] or not merged_prompts[key]['version']:
+                    merged_prompts[key]['version'] = default_prompts[key].get('version', '')
+                if 'description' not in merged_prompts[key] or not merged_prompts[key]['description']:
+                    merged_prompts[key]['description'] = default_prompts[key].get('description', '')
+                if 'prompt' not in merged_prompts[key]:
+                    merged_prompts[key]['prompt'] = ''
+                if 'lastUpdated' not in merged_prompts[key]:
+                    merged_prompts[key]['lastUpdated'] = ''
+            
+            print(f"[save_configuration] ===== FINAL MERGED PROMPTS =====")
+            print(f"[save_configuration] Final merged prompts: {json.dumps(merged_prompts, indent=2, default=str)}")
+            print(f"[save_configuration] Final merged prompts type: {type(merged_prompts)}")
+            print(f"[save_configuration] Final merged prompts keys: {list(merged_prompts.keys())}")
+            
+            # DEBUG: Check each prompt before saving
+            for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+                if key in merged_prompts:
+                    prompt_obj = merged_prompts[key]
+                    print(f"[save_configuration] {key}: prompt='{prompt_obj.get('prompt', '')[:50]}...', version='{prompt_obj.get('version', '')}', lastUpdated='{prompt_obj.get('lastUpdated', '')}'")
+            
+            # Save merged prompts
+            print(f"[save_configuration] Setting prompts on settings_obj...")
+            settings_obj.prompts = merged_prompts
+            print(f"[save_configuration] ✅ Prompts set on settings_obj")
+            
+            # Store merged_prompts for response (before saving)
+            saved_prompts_for_response = merged_prompts.copy()
+        
+        print(f"[save_configuration] ===== SAVING TO DATABASE =====")
+        print(f"[save_configuration] About to save settings_obj...")
+        settings_obj.save()
+        print(f"[save_configuration] ✅ Settings saved to database")
+        
+        # Use the prompts we just saved (merged_prompts) for response instead of re-fetching
+        # This ensures we return exactly what we saved
+        if 'prompts' in data:
+            saved_prompts_response = saved_prompts_for_response
+            print(f"[save_configuration] Using saved merged_prompts for response")
+        else:
+            # Re-fetch from database only if prompts weren't in the request
+            print(f"[save_configuration] Re-fetching from database (prompts not in request)...")
+            settings_obj = AdminSettings.objects.first()
+            saved_prompts_response = getattr(settings_obj, 'prompts', {}) or {}
+            print(f"[save_configuration] ✅ Re-fetched settings_obj from database")
+        
+        print(f"[save_configuration] ===== VERIFYING PROMPTS FOR RESPONSE =====")
+        print(f"[save_configuration] Saved prompts for response type: {type(saved_prompts_response)}")
+        print(f"[save_configuration] Saved prompts for response: {json.dumps(saved_prompts_response, indent=2, default=str)}")
+        
+        # Verify each prompt
+        for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+            if key in saved_prompts_response and isinstance(saved_prompts_response[key], dict):
+                prompt_obj = saved_prompts_response[key]
+                prompt_text = prompt_obj.get('prompt', '')
+                print(f"[save_configuration] ✅ {key}: prompt length={len(prompt_text)}, version='{prompt_obj.get('version', '')}', has_prompt_text={bool(prompt_text)}")
+            else:
+                print(f"[save_configuration] ⚠️ {key} NOT found in saved prompts or not a dict")
+        
+        if not isinstance(saved_prompts_response, dict):
+            try:
+                if isinstance(saved_prompts_response, str):
+                    saved_prompts_response = json.loads(saved_prompts_response)
+                else:
+                    saved_prompts_response = {}
+            except:
+                saved_prompts_response = {}
+        
+        # Ensure all prompts are in the response with proper structure
+        response_prompts = {}
+        default_prompts = {
+            "prompt1": {"version": "v2.1.0", "description": "Extract individual questions from uploaded document"},
+            "prompt2": {"version": "v1.8.0", "description": "Create new questions based on parsed content"},
+            "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"},
+            "prompt4": {"version": "v1.2.0", "description": "Format questions for export"}
+        }
+        
+        for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+            if key in saved_prompts_response and isinstance(saved_prompts_response[key], dict):
+                response_prompts[key] = saved_prompts_response[key].copy()
+                # Ensure all fields exist with proper defaults (but don't overwrite existing values)
+                if 'prompt' not in response_prompts[key] or response_prompts[key]['prompt'] is None:
+                    response_prompts[key]['prompt'] = ''
+                if 'version' not in response_prompts[key] or not response_prompts[key]['version']:
+                    response_prompts[key]['version'] = default_prompts[key].get('version', '')
+                if 'description' not in response_prompts[key] or not response_prompts[key]['description']:
+                    response_prompts[key]['description'] = default_prompts[key].get('description', '')
+                if 'lastUpdated' not in response_prompts[key] or response_prompts[key]['lastUpdated'] is None:
+                    response_prompts[key]['lastUpdated'] = ''
+            else:
+                # Use defaults if not saved
+                response_prompts[key] = {
+                    'prompt': '',
+                    'version': default_prompts[key].get('version', ''),
+                    'description': default_prompts[key].get('description', ''),
+                    'lastUpdated': ''
+                }
+        
+        print(f"[save_configuration] ===== RETURNING RESPONSE =====")
+        print(f"[save_configuration] Returning prompts in response: {json.dumps(response_prompts, indent=2, default=str)}")
+        
+        response_data = {
+            "success": True,
+            "message": "Configuration saved successfully",
+            "prompts": response_prompts  # Return saved prompts so frontend can update immediately
+        }
+        
+        print(f"[save_configuration] Full response data: {json.dumps(response_data, indent=2, default=str)}")
+        print(f"[save_configuration] ===== DEBUG END =====")
+        
+        return Response(response_data)
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Get counts (Admin)
+@api_view(['GET'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def get_counts(request):
+    """Admin: Get question counts by type"""
+    try:
+        print(f"[get_counts] Getting question counts...")
+        
+        # Since Question model has strict=False, status is a dynamic field
+        # Use Python filter for reliable counting (MongoEngine may not query dynamic fields directly)
+        all_questions = Question.objects.all()
+        total_count = all_questions.count()
+        print(f"[get_counts] Total questions in database: {total_count}")
+        
+        input_count = 0
+        generated_count = 0
+        manual_review_count = 0
+        
+        for q in all_questions:
+            q_status = getattr(q, 'status', None)
+            if q_status == 'input':
+                input_count += 1
+            elif q_status == 'generated':
+                generated_count += 1
+            elif q_status in ['manual_review', 'pending']:
+                manual_review_count += 1
+        
+        print(f"[get_counts] Counted using Python filter: input={input_count}, generated={generated_count}, manual_review={manual_review_count}")
+        
+        counts = {
+            "input_questions": input_count,
+            "generated_questions": generated_count,
+            "manual_review_queue": manual_review_count
+        }
+        
+        print(f"[get_counts] Returning counts: {counts}")
+        
+        return Response({
+            "success": True,
+            "counts": counts
+        })
+    except Exception as e:
+        print(f"[get_counts] Error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Get questions by type (Admin)
+@api_view(['GET'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def get_questions_by_type(request, question_type):
+    """Admin: Get questions by type (input, generated, manual_review)"""
+    try:
+        print(f"[get_questions_by_type] Requested question_type: {question_type}")
+        
+        # Since Question model has strict=False, status is a dynamic field
+        # MongoEngine may not support direct querying of dynamic fields, so use Python filter
+        # Get all questions and filter by status in Python (more reliable for dynamic fields)
+        print(f"[get_questions_by_type] Fetching all questions and filtering by status...")
+        all_questions_qs = Question.objects.all().order_by('-created_at')
+        total_count = all_questions_qs.count()
+        print(f"[get_questions_by_type] Total questions in database: {total_count}")
+        
+        # Convert queryset to list to ensure all fields are loaded
+        all_questions = list(all_questions_qs)
+        print(f"[get_questions_by_type] Loaded {len(all_questions)} questions into memory")
+        
+        filtered_questions = []
+        
+        # Map question_type to status value
+        if question_type == 'input':
+            print(f"[get_questions_by_type] Filtering for status='input'")
+            for q in all_questions:
+                q_status = getattr(q, 'status', None)
+                if q_status == 'input':
+                    filtered_questions.append(q)
+        elif question_type == 'generated':
+            print(f"[get_questions_by_type] Filtering for status='generated'")
+            for q in all_questions:
+                q_status = getattr(q, 'status', None)
+                if q_status == 'generated':
+                    filtered_questions.append(q)
+        elif question_type == 'manual_review':
+            print(f"[get_questions_by_type] Filtering for status='manual_review' or 'pending'")
+            for q in all_questions:
+                q_status = getattr(q, 'status', None)
+                if q_status in ['manual_review', 'pending']:
+                    filtered_questions.append(q)
+        else:
+            return Response({
+                "success": False,
+                "error": "Invalid question type"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        print(f"[get_questions_by_type] Filtered {len(filtered_questions)} questions with status matching '{question_type}'")
+        
+        # Debug: Show status of first few questions
+        if len(all_questions) > 0:
+            print(f"[get_questions_by_type] Sample of first 5 questions and their status:")
+            for i, q in enumerate(all_questions[:5]):
+                q_status = getattr(q, 'status', None)
+                print(f"[get_questions_by_type]   Question {i+1}: ID={q.id}, status={q_status}, text={q.question_text[:50]}...")
+        
+        # Serialize questions
+        serializer = QuestionSerializer(filtered_questions, many=True)
+        print(f"[get_questions_by_type] Serialized {len(serializer.data)} questions")
+        
+        # Debug: Show first few question IDs and their serialized data
+        if filtered_questions:
+            print(f"[get_questions_by_type] First 3 question IDs: {[str(q.id) for q in filtered_questions[:3]]}")
+            if serializer.data:
+                print(f"[get_questions_by_type] First serialized question: {json.dumps(serializer.data[0], indent=2, default=str) if serializer.data else 'None'}")
+        
+        return Response({
+            "success": True,
+            "questions": serializer.data
+        })
+    except Exception as e:
+        print(f"[get_questions_by_type] Error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Parse document (Admin) - Using Gemini API
+@api_view(['POST'])
+@authenticate
+@restrict(['admin'])
+@parser_classes([MultiPartParser, FormParser])
+@csrf_exempt
+def parse_document(request):
+    """Admin: Parse document and extract questions using Gemini API"""
+    try:
+        from settings_app.models import AdminSettings
+        import os
+        import base64
+        from django.core.files.storage import default_storage
+        from django.core.files.base import ContentFile
+        
+        # Get configuration
+        settings_obj = AdminSettings.objects.first()
+        if not settings_obj:
+            settings_obj = AdminSettings()
+        
+        # Get prompts
+        saved_prompts = getattr(settings_obj, 'prompts', {}) or {}
+        prompt1 = saved_prompts.get('prompt1', {})
+        parsing_prompt = prompt1.get('prompt', '') if prompt1 else ''
+        
+        # Get file
+        file = request.FILES.get('file')
+        if not file:
+            return JsonResponse({"success": False, "error": "No file provided"}, status=400)
+        
+        # Get parameters
+        parsing_instructions = request.POST.get('parsing_instructions', '')
+        test_mode = request.POST.get('test_mode', 'false').lower() == 'true'
+        try:
+            limit = int(request.POST.get('limit', 5)) if test_mode else None
+        except (ValueError, TypeError):
+            limit = 5 if test_mode else None
+        
+        # Check if Gemini is available
+        if not GEMINI_AVAILABLE or not genai:
+            return JsonResponse({"success": False, "error": "Gemini API not available. Please install google-generativeai package."}, status=500)
+        
+        # Initialize Gemini - Check database first, then environment variables
+        # Try to load .env file if not already loaded (settings.py loads it, but ensure it's accessible)
+        try:
+            from dotenv import load_dotenv
+            from pathlib import Path
+            # Use same BASE_DIR calculation as settings.py
+            # settings.py: Path(__file__).resolve().parent.parent where __file__ is backend/backend/settings.py
+            # So BASE_DIR = backend/
+            # From views.py (backend/questions/views.py), parent.parent = backend/
+            BASE_DIR = Path(__file__).resolve().parent.parent
+            env_file = os.path.join(BASE_DIR, '.env')
+            print(f"[parse_document] Looking for .env at: {env_file}")
+            print(f"[parse_document] .env exists: {os.path.exists(env_file)}")
+            if os.path.exists(env_file):
+                load_dotenv(env_file, override=True)  # Use override=True to reload
+                print(f"[parse_document] Loaded .env file")
+        except Exception as e:
+            print(f"[parse_document] Warning: Could not load .env file: {e}")
+        
+        # Check for API key: database first, then environment variables, then Django settings
+        gemini_api_key = None
+        
+        # First check database
+        db_key = getattr(settings_obj, 'gemini_api_key', None)
+        print(f"[parse_document] Database key found: {bool(db_key and str(db_key).strip())}")
+        if db_key and str(db_key).strip():
+            gemini_api_key = str(db_key).strip()
+            print(f"[parse_document] Using API key from database")
+        
+        # Then check environment variables (already loaded by settings.py)
+        if not gemini_api_key:
+            env_key = os.environ.get('GEMINI_API_KEY', '')
+            print(f"[parse_document] Environment variable GEMINI_API_KEY exists: {bool(env_key)}")
+            if env_key:
+                gemini_api_key = env_key.strip()
+                print(f"[parse_document] Using API key from environment")
+        
+        # Also try Django settings if available
+        if not gemini_api_key:
+            try:
+                from django.conf import settings as django_settings
+                if hasattr(django_settings, 'GEMINI_API_KEY') and django_settings.GEMINI_API_KEY:
+                    gemini_api_key = django_settings.GEMINI_API_KEY.strip()
+                    print(f"[parse_document] Using API key from Django settings")
+            except Exception as e:
+                print(f"[parse_document] Could not get key from Django settings: {e}")
+        
+        if not gemini_api_key:
+            return JsonResponse({
+                "success": False, 
+                "error": "GEMINI_API_KEY not found. Please add it to AdminSettings (gemini_api_key field) or set GEMINI_API_KEY=your_key in .env file in backend directory."
+            }, status=500)
+        
+        genai.configure(api_key=gemini_api_key)
+        
+        # Get a valid model name by checking available models
+        model_name = get_valid_gemini_model('gemini-1.5-flash-latest', genai)
+        print(f"[parse_document] Using Gemini model: {model_name}")
+        
+        # Read file content
+        file_content = file.read()
+        file_ext = file.name.split('.')[-1].lower()
+        
+        # Prepare prompt
+        full_prompt = parsing_prompt if parsing_prompt else "Extract all multiple choice questions from this document. For each question, provide: question text, options (A, B, C, D, etc.), correct answer(s), and explanation if available."
+        if parsing_instructions:
+            full_prompt += f"\n\nAdditional instructions: {parsing_instructions}"
+        full_prompt += "\n\nReturn the questions in JSON format: [{\"question_text\": \"...\", \"options\": [{\"text\": \"...\"}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\"}]"
+        
+        # Use Gemini to parse document - try multiple model name formats
+        model = None
+        model_error_msg = None
+        
+        # Try different model name formats
+        model_name_variants = [
+            model_name,  # Original name
+            model_name.replace('-latest', ''),  # Without -latest suffix
+            f'models/{model_name}',  # With models/ prefix
+            f'models/{model_name.replace("-latest", "")}',  # With prefix, without -latest
+        ]
+        
+        for variant in model_name_variants:
+            try:
+                print(f"[parse_document] Trying model name: {variant}")
+                model = genai.GenerativeModel(variant)
+                # Test if model is valid by checking if it has the method
+                if hasattr(model, 'generate_content'):
+                    print(f"[parse_document] Successfully initialized model: {variant}")
+                    model_name = variant
+                    break
+            except Exception as e:
+                model_error_msg = str(e)
+                print(f"[parse_document] Model {variant} failed: {e}")
+                continue
+        
+        # If all variants failed, try to get a valid model from API
+        if model is None:
+            print(f"[parse_document] All model name variants failed, querying API for available models...")
+            try:
+                models = genai.list_models()
+                valid_model_short = None
+                valid_model_full = None
+                available_model_names = []
+                
+                for m in models:
+                    if 'generateContent' in m.supported_generation_methods:
+                        # Try both full name and short name
+                        full_name = m.name
+                        short_name = m.name.split('/')[-1] if '/' in m.name else m.name
+                        available_model_names.append((full_name, short_name))
+                        
+                        # Prefer flash or pro models
+                        if not valid_model_short:
+                            if 'flash' in short_name.lower() or 'pro' in short_name.lower():
+                                valid_model_short = short_name
+                                valid_model_full = full_name
+                
+                # If no flash/pro found, use first available
+                if not valid_model_short and available_model_names:
+                    valid_model_full, valid_model_short = available_model_names[0]
+                
+                if valid_model_short:
+                    print(f"[parse_document] Using API-discovered model: {valid_model_short}")
+                    # Try short name first (preferred)
+                    try:
+                        model = genai.GenerativeModel(valid_model_short)
+                        model_name = valid_model_short
+                        print(f"[parse_document] Successfully initialized with short name: {valid_model_short}")
+                    except Exception as short_err:
+                        print(f"[parse_document] Short name failed: {short_err}, trying full name: {valid_model_full}")
+                        # Try full name as fallback
+                        try:
+                            model = genai.GenerativeModel(valid_model_full)
+                            model_name = valid_model_full
+                            print(f"[parse_document] Successfully initialized with full name: {valid_model_full}")
+                        except Exception as full_err:
+                            # Try other available models
+                            for full_name, short_name in available_model_names:
+                                try:
+                                    model = genai.GenerativeModel(short_name)
+                                    model_name = short_name
+                                    print(f"[parse_document] Successfully initialized with: {short_name}")
+                                    break
+                                except:
+                                    continue
+                
+                if model is None:
+                    error_details = f"Available models: {[m.name for m in models]}"
+                    raise Exception(f"No valid Gemini model found. {error_details}. Last error: {model_error_msg}")
+            except Exception as e:
+                return JsonResponse({
+                    "success": False,
+                    "error": f"Failed to initialize Gemini model: {str(e)}. Please check your API key and model availability."
+                }, status=500)
+        
+        try:
+            if file_ext == 'pdf':
+                # For PDF, send as base64
+                import base64
+                file_base64 = base64.b64encode(file_content).decode('utf-8')
+                file_part = {
+                    "mime_type": "application/pdf",
+                    "data": file_base64
+                }
+                try:
+                    response = model.generate_content([full_prompt, file_part])
+                except Exception as gen_error:
+                    # If generate_content fails, it might be a model compatibility issue
+                    error_msg = str(gen_error)
+                    if 'not found' in error_msg.lower() or 'not supported' in error_msg.lower():
+                        return JsonResponse({
+                            "success": False, 
+                            "error": f"Model {model_name} is not available or not supported. Error: {error_msg}. Please check your Gemini API configuration."
+                        }, status=500)
+                    raise
+            elif file_ext == 'docx':
+                # For DOCX, convert to text first
+                try:
+                    try:
+                        from docx import Document
+                        doc = Document(io.BytesIO(file_content))
+                        text_content = "\n".join([para.text for para in doc.paragraphs])
+                        response = model.generate_content(f"{full_prompt}\n\nDocument content:\n{text_content}")
+                    except ImportError:
+                        # python-docx not installed, try alternative
+                        text_content = file_content.decode('utf-8', errors='ignore')
+                        response = model.generate_content(f"{full_prompt}\n\nDocument content:\n{text_content}")
+                except Exception as e:
+                    return JsonResponse({"success": False, "error": f"Failed to read DOCX file: {str(e)}"}, status=400)
+            else:
+                return JsonResponse({"success": False, "error": "Unsupported file type. Please upload PDF or DOCX."}, status=400)
+        except Exception as e:
+            error_msg = str(e)
+            if 'not found' in error_msg.lower() or 'not supported' in error_msg.lower():
+                return JsonResponse({
+                    "success": False, 
+                    "error": f"Gemini model error: {error_msg}. The model may not be available for your API key or region."
+                }, status=500)
+            return JsonResponse({"success": False, "error": f"Failed to generate content from AI: {error_msg}"}, status=500)
+        
+        # Parse response
+        try:
+            response_text = response.text if hasattr(response, 'text') else str(response)
+        except Exception as e:
+            return JsonResponse({"success": False, "error": f"Failed to get response text: {str(e)}"}, status=500)
+        
+        # Extract JSON from response
+        try:
+            # Try to find JSON in the response
+            import re
+            print(f"[parse_document] Response text length: {len(response_text)}")
+            print(f"[parse_document] Response preview: {response_text[:500]}...")
+            
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                print(f"[parse_document] Found JSON array, length: {len(json_str)}")
+                questions_data = json.loads(json_str)
+            else:
+                # Try parsing the whole response as JSON
+                print(f"[parse_document] Trying to parse entire response as JSON")
+                questions_data = json.loads(response_text)
+            
+            print(f"[parse_document] Successfully parsed {len(questions_data) if isinstance(questions_data, list) else 1} question(s)")
+        except json.JSONDecodeError as e:
+            print(f"[parse_document] JSON decode error: {str(e)}")
+            print(f"[parse_document] Full response: {response_text}")
+            return JsonResponse({"success": False, "error": f"Failed to parse AI response as JSON: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
+        except Exception as e:
+            print(f"[parse_document] Parse error: {str(e)}")
+            print(f"[parse_document] Full response: {response_text}")
+            return JsonResponse({"success": False, "error": f"Failed to parse AI response: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
+        
+        if not isinstance(questions_data, list):
+            questions_data = [questions_data]
+        
+        print(f"[parse_document] Processing {len(questions_data)} questions")
+        
+        # Limit questions in test mode
+        if test_mode and limit:
+            questions_data = questions_data[:limit]
+            print(f"[parse_document] Limited to {limit} questions in test mode")
+        
+        # Get a default course (you may want to make this configurable)
+        default_course = Course.objects.first()
+        if not default_course:
+            print(f"[parse_document] ERROR: No course found in database")
+            return JsonResponse({"success": False, "error": "No course found. Please create a course first."}, status=400)
+        print(f"[parse_document] Using course: {default_course.id} - {getattr(default_course, 'name', 'Unnamed')}")
+        
+        # Save questions
+        saved_count = 0
+        errors = []
+        
+        print(f"\n[parse_document] ===== STARTING TO SAVE QUESTIONS =====")
+        print(f"[parse_document] Total questions to process: {len(questions_data)}")
+        print(f"[parse_document] Default course ID: {default_course.id}")
+        print(f"[parse_document] Default course name: {getattr(default_course, 'name', 'Unnamed')}")
+        
+        for idx, q_data in enumerate(questions_data):
+            try:
+                print(f"\n[parse_document] Processing question {idx + 1}/{len(questions_data)}")
+                print(f"[parse_document] Raw question data: {json.dumps(q_data, indent=2, default=str)[:500]}")
+                
+                question_text = q_data.get('question_text', '').strip()
+                if not question_text:
+                    error_msg = f"Question {idx + 1}: Missing question text"
+                    errors.append(error_msg)
+                    print(f"[parse_document] {error_msg}")
+                    continue
+                
+                options = q_data.get('options', [])
+                if not options:
+                    error_msg = f"Question {idx + 1}: Missing options"
+                    errors.append(error_msg)
+                    print(f"[parse_document] {error_msg}")
+                    continue
+                
+                # Normalize options
+                normalized_options = []
+                option_texts = []  # Track option texts for validation
+                for opt in options:
+                    if isinstance(opt, dict):
+                        opt_text = opt.get('text', '').strip()
+                        if opt_text:
+                            normalized_options.append(opt)
+                            option_texts.append(opt_text)
+                    elif isinstance(opt, str):
+                        opt_text = opt.strip()
+                        if opt_text:
+                            normalized_options.append({"text": opt_text})
+                            option_texts.append(opt_text)
+                
+                if len(normalized_options) < 2:
+                    error_msg = f"Question {idx + 1}: Need at least 2 options, got {len(normalized_options)}"
+                    errors.append(error_msg)
+                    print(f"[parse_document] {error_msg}")
+                    continue
+                
+                correct_answers = q_data.get('correct_answers', [])
+                if not correct_answers:
+                    error_msg = f"Question {idx + 1}: Missing correct answers"
+                    errors.append(error_msg)
+                    print(f"[parse_document] {error_msg}")
+                    continue
+                
+                if not isinstance(correct_answers, list):
+                    correct_answers = [correct_answers]
+                
+                # Normalize correct answers (remove empty strings, strip whitespace)
+                correct_answers = [str(ca).strip() for ca in correct_answers if str(ca).strip()]
+                
+                if not correct_answers:
+                    error_msg = f"Question {idx + 1}: No valid correct answers after normalization"
+                    errors.append(error_msg)
+                    print(f"[parse_document] {error_msg}")
+                    continue
+                
+                # Validate and match correct answers to option texts
+                # Try to match correct answers to option texts (case-insensitive)
+                validated_correct_answers = []
+                for ca in correct_answers:
+                    ca_str = str(ca).strip()
+                    if not ca_str:
+                        continue
+                    
+                    ca_lower = ca_str.lower()
+                    matched = False
+                    
+                    # Try exact match first (case-insensitive)
+                    for opt_text in option_texts:
+                        if opt_text.lower().strip() == ca_lower:
+                            validated_correct_answers.append(opt_text)  # Use the actual option text
+                            matched = True
+                            break
+                    
+                    if not matched:
+                        # Try partial match (contains)
+                        for opt_text in option_texts:
+                            if ca_lower in opt_text.lower() or opt_text.lower() in ca_lower:
+                                validated_correct_answers.append(opt_text)
+                                matched = True
+                                break
+                    
+                    if not matched:
+                        # Try letter-based answer (A, B, C, D, etc.)
+                        if len(ca_str) == 1 and ca_str.upper() in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+                            letter_index = ord(ca_str.upper()) - ord('A')
+                            if 0 <= letter_index < len(option_texts):
+                                validated_correct_answers.append(option_texts[letter_index])
+                                matched = True
+                    
+                    if not matched:
+                        # Try numeric index (0, 1, 2, 3, etc.)
+                        try:
+                            num_index = int(ca_str)
+                            if 0 <= num_index < len(option_texts):
+                                validated_correct_answers.append(option_texts[num_index])
+                                matched = True
+                        except ValueError:
+                            pass
+                    
+                    # If still not matched, try to use the answer as-is or find closest match
+                    if not matched:
+                        # If this is the first correct answer and we have no matches yet, try to use it as-is
+                        # or use first option as fallback
+                        if not validated_correct_answers:
+                            # Try to use the answer as-is first (might work if it's close enough)
+                            # But if it's clearly not an option text, use first option
+                            if len(ca_str) > 20 or ca_str.lower() in ['true', 'false', 'yes', 'no']:
+                                # Probably not an option text, use first option
+                                if option_texts:
+                                    validated_correct_answers.append(option_texts[0])
+                                    print(f"[parse_document] Question {idx + 1}: Correct answer '{ca_str}' doesn't match options, using first option as fallback")
+                                else:
+                                    validated_correct_answers.append(ca_str)
+                            else:
+                                # Might be an option text, use as-is
+                                validated_correct_answers.append(ca_str)
+                                print(f"[parse_document] Question {idx + 1}: Using correct answer '{ca_str}' as-is (could not match to options)")
+                        else:
+                            # We already have some matches, skip this unmatchable one
+                            print(f"[parse_document] Question {idx + 1}: Could not match correct answer '{ca_str}', skipping (already have {len(validated_correct_answers)} match(es))")
+                
+                # Ensure we have at least one correct answer
+                if not validated_correct_answers:
+                    if option_texts:
+                        # Use first option as default
+                        validated_correct_answers = [option_texts[0]]
+                        print(f"[parse_document] Question {idx + 1}: No valid correct answers found, using first option '{option_texts[0]}' as default")
+                    else:
+                        error_msg = f"Question {idx + 1}: No options available to set as correct answer"
+                        errors.append(error_msg)
+                        print(f"[parse_document] {error_msg}")
+                        continue
+                
+                print(f"[parse_document] Question {idx + 1}: Validated correct answers: {validated_correct_answers}")
+                
+                question_type = q_data.get('question_type', 'single')
+                if question_type not in ['single', 'multiple']:
+                    question_type = 'single' if len(validated_correct_answers) == 1 else 'multiple'
+                
+                # Normalize tags
+                tags = q_data.get('tags', [])
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(',') if t.strip()]
+                elif not isinstance(tags, list):
+                    tags = []
+                
+                # Create question
+                try:
+                    print(f"[parse_document] Question {idx + 1}: Creating Question object...")
+                    print(f"[parse_document] Question {idx + 1}: question_text length={len(question_text)}")
+                    print(f"[parse_document] Question {idx + 1}: question_type={question_type}")
+                    print(f"[parse_document] Question {idx + 1}: options count={len(normalized_options)}")
+                    print(f"[parse_document] Question {idx + 1}: correct_answers={validated_correct_answers}")
+                    print(f"[parse_document] Question {idx + 1}: course={default_course.id}")
+                    
+                    # Create question without status field (since it's not in the model definition)
+                    # We'll set status dynamically after creation since strict=False allows dynamic fields
+                    question = Question(
+                        course=default_course,
+                        question_text=question_text,
+                        question_type=question_type,
+                        options=normalized_options,
+                        correct_answers=validated_correct_answers,
+                        explanation=q_data.get('explanation', '') or '',
+                        tags=tags
+                    )
+                    
+                    # Set status field dynamically after creation (since strict=False allows dynamic fields)
+                    # Use setattr or direct assignment to set the status field
+                    question.status = 'input'  # Mark as input question
+                    print(f"[parse_document] Question {idx + 1}: Set status='input' dynamically")
+                    
+                    print(f"[parse_document] Question {idx + 1}: Question object created, calling save()...")
+                    question.save()
+                    print(f"[parse_document] Question {idx + 1}: ✅ save() completed successfully")
+                    
+                    # Verify question was actually saved to database
+                    try:
+                        saved_question = Question.objects.get(id=question.id)
+                        saved_status = getattr(saved_question, 'status', None)
+                        print(f"[parse_document] Question {idx + 1}: ✅ Verified in database - ID: {saved_question.id}")
+                        print(f"[parse_document] Question {idx + 1}: ✅ Database verification - question_text length: {len(saved_question.question_text)}")
+                        print(f"[parse_document] Question {idx + 1}: ✅ Database verification - status: {saved_status}")
+                        
+                        # Double-check status was saved correctly
+                        if saved_status != 'input':
+                            print(f"[parse_document] Question {idx + 1}: ⚠️ WARNING - Status is '{saved_status}' instead of 'input', fixing...")
+                            saved_question.status = 'input'
+                            saved_question.save()
+                            print(f"[parse_document] Question {idx + 1}: ✅ Fixed status to 'input'")
+                        
+                        saved_count += 1
+                        print(f"[parse_document] Question {idx + 1}: ✅ Successfully saved and verified: {question_text[:50]}...")
+                        print(f"[parse_document] Question {idx + 1}: ✅ TOTAL SAVED COUNT: {saved_count}")
+                    except Question.DoesNotExist:
+                        print(f"[parse_document] Question {idx + 1}: ❌ ERROR - Question not found in database after save()!")
+                        error_msg = f"Question {idx + 1}: Question was not saved to database (DoesNotExist after save)"
+                        errors.append(error_msg)
+                    except Exception as verify_error:
+                        print(f"[parse_document] Question {idx + 1}: ⚠️ Warning - Could not verify in database: {verify_error}")
+                        saved_count += 1  # Still count as saved if save() succeeded
+                        
+                except Exception as save_error:
+                    error_msg = f"Question {idx + 1}: Failed to save - {str(save_error)}"
+                    errors.append(error_msg)
+                    print(f"[parse_document] Question {idx + 1}: ❌ {error_msg}")
+                    import traceback
+                    print(f"[parse_document] Question {idx + 1}: Full traceback:")
+                    print(traceback.format_exc())
+            except Exception as e:
+                error_msg = f"Question {idx + 1}: Unexpected error - {str(e)}"
+                errors.append(error_msg)
+                print(f"[parse_document] {error_msg}")
+                import traceback
+                print(traceback.format_exc())
+        
+        # Update course question count
+        if default_course:
+            # Count questions with status='input' if status field exists
+            try:
+                input_questions_count = Question.objects(course=default_course, status='input').count()
+                print(f"[parse_document] Questions with status='input' in database: {input_questions_count}")
+            except:
+                # If status field doesn't exist, count all questions
+                input_questions_count = Question.objects(course=default_course).count()
+                print(f"[parse_document] Total questions in database (no status field): {input_questions_count}")
+            
+            question_count = Question.objects(course=default_course).count()
+            default_course.questions = question_count
+            default_course.save()
+            print(f"[parse_document] Updated course question count to {question_count}")
+        
+        # Final database verification
+        print(f"\n[parse_document] ===== FINAL DATABASE VERIFICATION =====")
+        try:
+            all_questions = Question.objects(course=default_course)
+            total_in_db = all_questions.count()
+            print(f"[parse_document] Total questions in database for this course: {total_in_db}")
+            
+            # Try to count by status
+            try:
+                input_questions = Question.objects(course=default_course, status='input')
+                input_count = input_questions.count()
+                print(f"[parse_document] Questions with status='input' in database: {input_count}")
+            except Exception as status_error:
+                print(f"[parse_document] Could not filter by status (field may not exist): {status_error}")
+            
+            # Show last few questions saved
+            recent_questions = Question.objects(course=default_course).order_by('-created_at')[:5]
+            print(f"[parse_document] Last 5 questions in database:")
+            for q in recent_questions:
+                q_text = q.question_text[:50] if q.question_text else 'N/A'
+                q_status = getattr(q, 'status', 'N/A')
+                print(f"[parse_document]   - ID: {q.id}, Text: {q_text}..., Status: {q_status}")
+        except Exception as verify_error:
+            print(f"[parse_document] Error during final verification: {verify_error}")
+        
+        print(f"\n[parse_document] ===== SUMMARY =====")
+        print(f"[parse_document] Total parsed: {len(questions_data)}")
+        print(f"[parse_document] Successfully saved: {saved_count}")
+        print(f"[parse_document] Errors: {len(errors)}")
+        if errors:
+            print(f"[parse_document] Error details: {errors}")
+        print(f"[parse_document] ====================\n")
+        
+        # Create detailed message
+        if saved_count > 0:
+            message = f"✅ Successfully parsed {len(questions_data)} questions and saved {saved_count} question(s) to database"
+            if len(errors) > 0:
+                message += f" ({len(errors)} question(s) had errors)"
+        else:
+            message = f"⚠️ Parsed {len(questions_data)} questions but saved 0 to database. Check errors for details."
+        
+        print(f"[parse_document] ===== RETURNING RESPONSE =====")
+        print(f"[parse_document] Response message: {message}")
+        print(f"[parse_document] saved_count: {saved_count}")
+        print(f"[parse_document] Total questions now in database for this course: {Question.objects(course=default_course).count() if default_course else 'N/A'}")
+        
+        return JsonResponse({
+            "success": saved_count > 0,
+            "message": message,
+            "parsed_count": len(questions_data),
+            "saved_count": saved_count,
+            "errors": errors,
+            "database_count": Question.objects(course=default_course).count() if default_course else 0
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"[parse_document] Error: {error_msg}")
+        print(traceback.format_exc())
+        return JsonResponse({"success": False, "error": error_msg}, status=500)
+
+
+# ✅ Generate new questions from input (Admin) - Using OpenAI
+@api_view(['POST'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def generate_from_input(request):
+    """Admin: Generate new questions from input questions using OpenAI"""
+    try:
+        from settings_app.models import AdminSettings
+        import os
+        
+        # Get configuration
+        settings_obj = AdminSettings.objects.first()
+        if not settings_obj:
+            settings_obj = AdminSettings()
+        
+        # Get prompts
+        saved_prompts = getattr(settings_obj, 'prompts', {}) or {}
+        prompt2 = saved_prompts.get('prompt2', {})
+        generation_prompt = prompt2.get('prompt', '') if prompt2 else ''
+        
+        # Get parameters
+        data = request.data
+        question_ids = data.get('question_ids', [])
+        num_questions_per_source = int(data.get('num_questions_per_source', 1))
+        
+        # Check if OpenAI is available
+        if not OPENAI_AVAILABLE or not openai:
+            return JsonResponse({"success": False, "error": "OpenAI API not available. Please install openai package."}, status=500)
+        
+        # Initialize OpenAI - Check database first, then environment variables
+        # Try to load .env file if not already loaded (settings.py loads it, but ensure it's accessible)
+        try:
+            from dotenv import load_dotenv
+            from pathlib import Path
+            # Use same BASE_DIR calculation as settings.py
+            BASE_DIR = Path(__file__).resolve().parent.parent
+            env_file = os.path.join(BASE_DIR, '.env')
+            if os.path.exists(env_file):
+                load_dotenv(env_file, override=False)
+        except Exception as e:
+            print(f"[generate_from_input] Warning: Could not load .env file: {e}")
+        
+        # Check for API key: database first, then environment variables, then Django settings
+        openai_api_key = None
+        
+        # First check database
+        db_key = getattr(settings_obj, 'openai_api_key', None)
+        if db_key and str(db_key).strip():
+            openai_api_key = str(db_key).strip()
+        
+        # Then check environment variables (already loaded by settings.py)
+        if not openai_api_key:
+            openai_api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        
+        # Also try Django settings if available
+        if not openai_api_key:
+            try:
+                from django.conf import settings as django_settings
+                if hasattr(django_settings, 'OPENAI_API_KEY') and django_settings.OPENAI_API_KEY:
+                    openai_api_key = django_settings.OPENAI_API_KEY.strip()
+            except:
+                pass
+        
+        if not openai_api_key:
+            return JsonResponse({
+                "success": False, 
+                "error": "OPENAI_API_KEY not found. Please add it to AdminSettings (openai_api_key field) or set OPENAI_API_KEY=your_key in .env file in backend directory."
+            }, status=500)
+        
+        # Get input questions
+        if question_ids:
+            # Generate from specific questions
+            questions = []
+            for qid in question_ids:
+                if ObjectId.is_valid(qid):
+                    try:
+                        q = Question.objects.get(id=ObjectId(qid), status='input')
+                        questions.append(q)
+                    except Question.DoesNotExist:
+                        continue
+        else:
+            # Generate from all input questions
+            questions = Question.objects(status='input').order_by('-created_at')
+        
+        if not questions:
+            return JsonResponse({"success": False, "error": "No input questions found to generate from"}, status=400)
+        
+        # Get default course
+        default_course = Course.objects.first()
+        if not default_course:
+            return JsonResponse({"success": False, "error": "No course found. Please create a course first."}, status=400)
+        
+        # Get configuration
+        max_retries = getattr(settings_obj, 'max_retry_count', 3)
+        temperature = getattr(settings_obj, 'temperature', 0)
+        model_name = getattr(settings_obj, 'model_selector', 'gpt-4') or 'gpt-4'
+        
+        saved_count = 0
+        errors = []
+        
+        # Generate questions from each input question
+        for source_question in questions:
+            for _ in range(num_questions_per_source):
+                try:
+                    # Prepare prompt
+                    if not generation_prompt:
+                        generation_prompt = "Generate a new multiple choice question similar to the given question but with different wording, options, and correct answer. Maintain the same difficulty level and topic."
+                    
+                    full_prompt = f"{generation_prompt}\n\nSource question:\nQuestion: {source_question.question_text}\nOptions: {[opt.get('text', opt) if isinstance(opt, dict) else opt for opt in source_question.options]}\nCorrect Answer: {source_question.correct_answers}\nExplanation: {source_question.explanation or 'N/A'}\n\nGenerate a new question in JSON format: {{\"question_text\": \"...\", \"options\": [{{\"text\": \"...\"}}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\"}}"
+                    
+                    # Call OpenAI
+                    try:
+                        # Try new OpenAI API format (v1.0+)
+                        client = openai.OpenAI(api_key=openai_api_key)
+                        response = client.chat.completions.create(
+                            model=model_name,
+                            messages=[
+                                {"role": "system", "content": "You are a question generator. Generate new questions in JSON format."},
+                                {"role": "user", "content": full_prompt}
+                            ],
+                            temperature=temperature,
+                            max_tokens=2000
+                        )
+                        response_text = response.choices[0].message.content.strip()
+                    except AttributeError:
+                        # Fallback to old API format
+                        openai.api_key = openai_api_key
+                        response = openai.ChatCompletion.create(
+                            model=model_name,
+                            messages=[
+                                {"role": "system", "content": "You are a question generator. Generate new questions in JSON format."},
+                                {"role": "user", "content": full_prompt}
+                            ],
+                            temperature=temperature,
+                            max_tokens=2000
+                        )
+                        response_text = response.choices[0].message.content.strip()
+                    
+                    # Extract JSON
+                    import re
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if json_match:
+                        q_data = json.loads(json_match.group())
+                    else:
+                        q_data = json.loads(response_text)
+                    
+                    # Validate and save question
+                    question_text = q_data.get('question_text', '').strip()
+                    if not question_text:
+                        errors.append(f"Generated question: Missing question text")
+                        continue
+                    
+                    options = q_data.get('options', [])
+                    if not options:
+                        errors.append(f"Generated question: Missing options")
+                        continue
+                    
+                    normalized_options = []
+                    for opt in options:
+                        if isinstance(opt, dict):
+                            normalized_options.append(opt)
+                        elif isinstance(opt, str):
+                            normalized_options.append({"text": opt})
+                    
+                    correct_answers = q_data.get('correct_answers', [])
+                    if not correct_answers:
+                        errors.append(f"Generated question: Missing correct answers")
+                        continue
+                    
+                    if not isinstance(correct_answers, list):
+                        correct_answers = [correct_answers]
+                    
+                    question_type = q_data.get('question_type', 'single')
+                    if question_type not in ['single', 'multiple']:
+                        question_type = 'single' if len(correct_answers) == 1 else 'multiple'
+                    
+                    # Create generated question
+                    new_question = Question(
+                        course=default_course,
+                        question_text=question_text,
+                        question_type=question_type,
+                        options=normalized_options,
+                        correct_answers=correct_answers,
+                        explanation=q_data.get('explanation', ''),
+                        status='generated',  # Mark as generated question
+                        tags=q_data.get('tags', [])
+                    )
+                    new_question.save()
+                    saved_count += 1
+                    
+                except Exception as e:
+                    errors.append(f"Error generating question: {str(e)}")
+                    continue
+        
+        # Update course question count
+        if default_course:
+            question_count = Question.objects(course=default_course).count()
+            default_course.questions = question_count
+            default_course.save()
+        
+        return JsonResponse({
+            "success": True,
+            "message": f"Successfully generated {saved_count} new question(s)",
+            "saved_count": saved_count,
+            "errors": errors
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"[generate_from_input] Error: {error_msg}")
+        print(traceback.format_exc())
+        return JsonResponse({"success": False, "error": error_msg}, status=500)
+
+
+# ✅ Update parsed question (Admin)
+@api_view(['PUT'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def update_parsed_question(request, question_id):
+    """Admin: Update a parsed question"""
+    try:
+        if not ObjectId.is_valid(question_id):
+            return Response({"success": False, "error": "Invalid question ID"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        question = Question.objects.get(id=ObjectId(question_id))
+        data = request.data
+        
+        # Update fields (Question model has strict=False, so we can add status field)
+        if 'question_text' in data:
+            question.question_text = data['question_text']
+        if 'question_type' in data:
+            question.question_type = data['question_type']
+        if 'options' in data:
+            question.options = data['options']
+        if 'correct_answers' in data:
+            question.correct_answers = data['correct_answers']
+        if 'explanation' in data:
+            question.explanation = data.get('explanation', '')
+        if 'status' in data:
+            question.status = data['status']  # status field for parsed questions
+        if 'tags' in data:
+            question.tags = data['tags']
+        
+        question.updated_at = datetime.datetime.utcnow()
+        question.save()
+        
+        serializer = QuestionSerializer(question)
+        return Response({
+            "success": True,
+            "message": "Question updated successfully",
+            "data": serializer.data
+        })
+    except Question.DoesNotExist:
+        return Response({"success": False, "error": "Question not found"}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Delete parsed question (Admin)
+@api_view(['DELETE'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def delete_parsed_question(request, question_id):
+    """Admin: Delete a parsed question"""
+    try:
+        if not ObjectId.is_valid(question_id):
+            return Response({"success": False, "error": "Invalid question ID"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        question = Question.objects.get(id=ObjectId(question_id))
+        question.delete()
+        
+        return Response({
+            "success": True,
+            "message": "Question deleted successfully"
+        })
+    except Question.DoesNotExist:
+        return Response({"success": False, "error": "Question not found"}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ✅ Bulk delete parsed questions (Admin)
+@api_view(['POST'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def bulk_delete_parsed_questions(request):
+    """Admin: Delete multiple parsed questions"""
+    try:
+        question_ids = request.data.get('question_ids', [])
+        
+        if not question_ids:
+            return Response({"success": False, "error": "No question IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        deleted_count = 0
+        
+        for qid in question_ids:
+            if ObjectId.is_valid(qid):
+                try:
+                    question = Question.objects.get(id=ObjectId(qid))
+                    question.delete()
+                    deleted_count += 1
+                except Question.DoesNotExist:
+                    continue
+        
+        return Response({
+            "success": True,
+            "message": f"{deleted_count} questions deleted successfully",
+            "deleted_count": deleted_count
+        })
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
