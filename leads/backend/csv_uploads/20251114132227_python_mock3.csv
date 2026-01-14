@@ -1,0 +1,125 @@
+question_text,question_type,options,correct_answers,marks,explanation
+What is the output of print(2 ** 3 ** 2)?,MCQ,"A) 64
+B) 512
+C) 256
+D) 8",B) 512,1,"Exponentiation is right-associative, so 3**2 = 9, then 2**9 = 512."
+Which of the following is a mutable data type in Python?,MCQ,"A) tuple
+B) list
+C) str
+D) int",B) list,1,"Lists are mutable, meaning their elements can be changed after creation."
+What is the output of bool(0) in Python?,MCQ,"A) True
+B) False
+C) 0
+D) None",B) False,1,"In Python, 0, empty containers, and None evaluate to False."
+Which keyword is used to create a function in Python?,MCQ,"A) function
+B) def
+C) fun
+D) define",B) def,1,Functions in Python are defined using the 'def' keyword.
+"What is the output of len([1, [2, 3], 4])?",MCQ,"A) 3
+B) 4
+C) 2
+D) Error",A) 3,1,"The list has 3 elements: 1, [2, 3], and 4."
+What is the output of type({})?,MCQ,"A) dict
+B) set
+C) list
+D) tuple",A) dict,1,"Empty curly braces represent a dictionary, not a set."
+Which operator is used for floor division in Python?,MCQ,"A) /
+B) //
+C) %
+D) **",B) //,1,"// performs floor division, rounding down the result."
+What does the 'pass' statement do?,MCQ,"A) Skips execution
+B) Exits loop
+C) Does nothing
+D) Throws error",C) Does nothing,1,'pass' is a null operation used as a placeholder.
+What is the output of 'Python'[::-1]?,MCQ,"A) nohtyP
+B) Python
+C) Error
+D) None",A) nohtyP,1,String slicing with step -1 reverses the string.
+Which of the following is not a keyword in Python?,MCQ,"A) eval
+B) assert
+C) lambda
+D) pass",A) eval,1,"'eval' is a built-in function, not a keyword."
+How do you start a comment in Python?,MCQ,"A) //
+B) /*
+C) #
+D) <!--",C) #,1,Comments in Python start with #.
+Which function converts a string to an integer?,MCQ,"A) str()
+B) int()
+C) float()
+D) chr()",B) int(),1,int() converts a string of digits into an integer.
+What is the output of 3 * 'ab'?,MCQ,"A) 'ababab'
+B) 'ab3'
+C) Error
+D) None",A) 'ababab',1,String multiplication repeats the string n times.
+Which module in Python supports regular expressions?,MCQ,"A) re
+B) regex
+C) pyregex
+D) match",A) re,1,The 're' module handles regular expressions.
+Which of these is used to handle exceptions?,MCQ,"A) try-except
+B) do-catch
+C) try-then
+D) handle-error",A) try-except,1,Python uses try-except blocks for error handling.
+What is the output of print(10 == 10.0)?,MCQ,"A) True
+B) False
+C) Error
+D) None",A) True,1,"Both values are equal numerically, so True."
+Which of the following creates a set?,MCQ,"A) {}
+B) set()
+C) []
+D) ()",B) set(),1,"set() creates an empty set, {} creates a dictionary."
+What does the len() function return?,MCQ,"A) Number of elements
+B) Sum
+C) Index
+D) None",A) Number of elements,1,len() returns the total number of elements.
+Which method adds an element to a list?,MCQ,"A) add()
+B) append()
+C) insert()
+D) push()",B) append(),1,append() adds an element to the end of a list.
+How are blocks of code defined in Python?,MCQ,"A) Braces {}
+B) Indentation
+C) Parentheses ()
+D) Semicolons",B) Indentation,1,Python uses indentation to define code blocks.
+What is the output of print('5' + '5')?,MCQ,"A) 10
+B) 55
+C) Error
+D) None",B) 55,1,String concatenation joins two strings together.
+Which function returns the absolute value?,MCQ,"A) abs()
+B) fabs()
+C) absval()
+D) math.abs()",A) abs(),1,abs() returns the absolute value of a number.
+What is the default value of end in print()?,MCQ,"A) '\n'
+B) ' '
+C) None
+D) '\t'",A) '\n',1,"By default, print() ends with a newline."
+Which of these types is immutable?,MCQ,"A) list
+B) dict
+C) set
+D) tuple",D) tuple,1,Tuples cannot be modified after creation.
+What does the open() function return?,MCQ,"A) A file object
+B) File name
+C) File path
+D) None",A) A file object,1,open() returns a file object used for I/O operations.
+Which method removes the last item from a list?,MCQ,"A) pop()
+B) remove()
+C) del
+D) discard()",A) pop(),1,pop() removes and returns the last element.
+What is the output of bool('False')?,MCQ,"A) True
+B) False
+C) Error
+D) None",A) True,1,"Non-empty strings evaluate to True, regardless of content."
+Which function returns the largest number?,MCQ,"A) max()
+B) top()
+C) high()
+D) large()",A) max(),1,max() returns the largest element in an iterable.
+What does 'is' operator check?,MCQ,"A) Equality
+B) Identity
+C) Type
+D) Membership",B) Identity,1,'is' checks if two variables point to the same object.
+Which function is used to get user input?,MCQ,"A) input()
+B) scan()
+C) get()
+D) cin()",A) input(),1,input() reads user input as a string.
+What is the output of print(4//3)?,MCQ,"A) 1.33
+B) 1
+C) 2
+D) Error",B) 1,1,// performs integer (floor) division.
