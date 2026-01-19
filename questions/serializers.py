@@ -1,12 +1,8 @@
 from rest_framework import serializers
-from .models import Question, CraftsmanQuestion
+from .models import Question
 
 
 class QuestionSerializer(serializers.Serializer):
-    """
-    Serializer for both Question and CraftsmanQuestion models.
-    Works with both models since they share the same field structure.
-    """
     id = serializers.CharField(read_only=True)
     course_id = serializers.CharField(required=True)
     question_text = serializers.CharField(required=True)
@@ -19,7 +15,7 @@ class QuestionSerializer(serializers.Serializer):
     tags = serializers.ListField(child=serializers.CharField(), required=False)
     
     def to_representation(self, instance):
-        # Get status field (proper field in CraftsmanQuestion, dynamic in Question)
+        # Get status field (dynamic field, may not exist)
         status = getattr(instance, 'status', None)
         
         return {
@@ -33,7 +29,7 @@ class QuestionSerializer(serializers.Serializer):
             'question_image': instance.question_image or None,
             'marks': instance.marks or 1,
             'tags': instance.tags or [],
-            'status': status,  # Status field (proper in CraftsmanQuestion, dynamic in Question)
+            'status': status,  # Include status field (dynamic field)
             'created_at': instance.created_at.isoformat() if instance.created_at else None,
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else None,
         }

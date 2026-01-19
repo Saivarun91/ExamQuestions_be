@@ -1357,10 +1357,9 @@ def download_csv(request):
                 else:
                     option_data.append({'text': '', 'explanation': ''})
 
-            # Map correct answers to option letters
-            correct_answers_letters = []
+            # Map correct answers to option numbers (1,2,3,4,5,6)
+            correct_answers_numbers = []
             option_texts = [opt['text'] for opt in option_data if opt['text']]
-            option_letters = ['A', 'B', 'C', 'D', 'E', 'F'][:len(option_texts)]
 
             for correct_answer in (question.correct_answers or []):
                 correct_text = str(correct_answer).strip()
@@ -1368,12 +1367,41 @@ def download_csv(request):
                 found = False
                 for idx, opt_text in enumerate(option_texts):
                     if opt_text.strip() == correct_text or opt_text.strip().lower() == correct_text.lower():
-                        correct_answers_letters.append(option_letters[idx])
+                        # Use 1-based numbering (1, 2, 3, 4, 5, 6)
+                        correct_answers_numbers.append(str(idx + 1))
                         found = True
                         break
-                # If not found, try to match by letter
-                if not found and correct_text.upper() in option_letters:
-                    correct_answers_letters.append(correct_text.upper())
+                # If not found, try to match by number (if answer is already a number)
+                if not found:
+                    try:
+                        # Check if correct_text is a number (1-6)
+                        num = int(correct_text)
+                        if 1 <= num <= len(option_texts):
+                            correct_answers_numbers.append(str(num))
+                            found = True
+                    except ValueError:
+                        pass
+                # If still not found, try to match by letter (A, B, C, D, E, F)
+                if not found:
+                    option_letters = ['A', 'B', 'C', 'D', 'E', 'F']
+                    if correct_text.upper() in option_letters:
+                        letter_idx = option_letters.index(correct_text.upper())
+                        if letter_idx < len(option_texts):
+                            correct_answers_numbers.append(str(letter_idx + 1))
+                            found = True
+
+            # Format question type: "single-correct" or "multi-correct"
+            question_type_display = question.question_type or 'single'
+            if question_type_display == 'single':
+                question_type_display = 'single-correct'
+            elif question_type_display == 'multiple':
+                question_type_display = 'multi-correct'
+            else:
+                # Fallback: determine from number of correct answers
+                if len(correct_answers_numbers) == 1:
+                    question_type_display = 'single-correct'
+                else:
+                    question_type_display = 'multi-correct'
 
             # Write row
             writer.writerow([
@@ -1385,9 +1413,9 @@ def download_csv(request):
                 option_data[4]['text'], option_data[4]['explanation'],
                 option_data[5]['text'], option_data[5]['explanation'],
                 ', '.join(
-                    correct_answers_letters) if correct_answers_letters else '',
+                    correct_answers_numbers) if correct_answers_numbers else '',
                 question.explanation or '',
-                question.question_type or 'single',
+                question_type_display,
                 ', '.join(question.tags) if question.tags else ''
             ])
 
@@ -2425,7 +2453,13 @@ def generate_from_input(request):
                         else:
                             source_options_str.append(str(opt))
 
-                    full_prompt = f"{generation_prompt}\n\nSource question:\nQuestion: {source_question.question_text}\nOptions: {source_options_str}\nCorrect Answer: {source_question.correct_answers}\nExplanation: {source_question.explanation or 'N/A'}\n\nGenerate a new question in JSON format: {{\"question_text\": \"...\", \"options\": [{{\"text\": \"...\", \"explanation\": \"...\"}}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\"}}\n\nIMPORTANT: Each option in the options array must include both 'text' and 'explanation' fields."
+                    # Get source question tags for reference
+                    source_tags = source_question.tags or []
+                    if isinstance(source_tags, str):
+                        source_tags = [t.strip() for t in source_tags.split(',') if t.strip()]
+                    source_tags_str = ', '.join(source_tags) if source_tags else 'N/A'
+
+                    full_prompt = f"{generation_prompt}\n\nSource question:\nQuestion: {source_question.question_text}\nOptions: {source_options_str}\nCorrect Answer: {source_question.correct_answers}\nExplanation: {source_question.explanation or 'N/A'}\nDomain/Tags: {source_tags_str}\n\nGenerate a new question in JSON format: {{\"question_text\": \"...\", \"options\": [{{\"text\": \"...\", \"explanation\": \"...\"}}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\", \"tags\": [\"...\"]}}\n\nIMPORTANT: \n1. Each option in the options array must include both 'text' and 'explanation' fields.\n2. Include a 'tags' field (array of strings) that represents the domain/topic of the question. Use the same or similar domain as the source question if applicable."
 
                     # Call OpenAI
                     try:
@@ -2503,6 +2537,56 @@ def generate_from_input(request):
                         question_type = 'single' if len(
                             correct_answers) == 1 else 'multiple'
 
+                    # Extract tags from AI response, or inherit from source question
+                    ai_tags = q_data.get('tags', [])
+                    if not ai_tags or (isinstance(ai_tags, list) and len(ai_tags) == 0):
+                        # If AI didn't provide tags, inherit from source question
+                        source_tags = source_question.tags or []
+                        if isinstance(source_tags, str):
+                            source_tags = [t.strip() for t in source_tags.split(',') if t.strip()]
+                        elif not isinstance(source_tags, list):
+                            source_tags = []
+                        final_tags = source_tags
+                    else:
+                        # Normalize AI-provided tags
+                        if isinstance(ai_tags, str):
+                            final_tags = [t.strip() for t in ai_tags.split(',') if t.strip()]
+                        elif isinstance(ai_tags, list):
+                            final_tags = [str(t).strip() for t in ai_tags if t and str(t).strip()]
+                        else:
+                            final_tags = []
+
+                    # Validate that correct answers exactly match the options
+                    # Extract option texts for validation
+                    option_texts = [opt.get('text', '').strip() for opt in normalized_options if opt.get('text', '').strip()]
+                    
+                    # Check if all correct answers match exactly (case-insensitive) with option texts
+                    all_answers_valid = True
+                    for correct_answer in correct_answers:
+                        correct_text = str(correct_answer).strip()
+                        if not correct_text:
+                            all_answers_valid = False
+                            break
+                        
+                        # Check for exact match (case-insensitive)
+                        matched = False
+                        for opt_text in option_texts:
+                            if opt_text.lower() == correct_text.lower():
+                                matched = True
+                                break
+                        
+                        if not matched:
+                            all_answers_valid = False
+                            break
+                    
+                    # Determine status: 'generated' if all answers match, 'manual_review' if not
+                    question_status = 'generated' if all_answers_valid else 'manual_review'
+                    
+                    if not all_answers_valid:
+                        print(f"[generate_from_input] Question validation failed - correct answers don't match options exactly. Moving to manual review.")
+                        print(f"[generate_from_input] Options: {option_texts}")
+                        print(f"[generate_from_input] Correct answers: {correct_answers}")
+
                     # Create generated question in CraftsmanQuestion collection and link to session
                     new_question = CraftsmanQuestion(
                         course=default_course,
@@ -2512,8 +2596,8 @@ def generate_from_input(request):
                         options=normalized_options,
                         correct_answers=correct_answers,
                         explanation=q_data.get('explanation', ''),
-                        status='generated',  # Mark as generated question
-                        tags=q_data.get('tags', [])
+                        status=question_status,  # 'generated' if valid, 'manual_review' if validation fails
+                        tags=final_tags  # Always populate tags (from AI or source question)
                     )
                     new_question.save()
                     saved_count += 1
@@ -2767,3 +2851,5 @@ def get_questions_by_session(request, session_id):
         import traceback
         print(traceback.format_exc())
         return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
