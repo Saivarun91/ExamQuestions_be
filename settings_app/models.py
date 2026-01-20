@@ -8,40 +8,47 @@ class AdminSettings(Document):
     logo_url = StringField(default="")
     email_notifications = BooleanField(default=True)
     maintenance_mode = BooleanField(default=False)
-    default_user_role = StringField(default="user", choices=[
-                                    "user", "moderator", "admin"])
+    default_user_role = StringField(default="user", choices=["user", "moderator", "admin"])
     session_timeout = IntField(default=30)
 
-    # Contact Details Fields
+    # Contact Details
     contact_email = StringField(default="")
     contact_phone = StringField(default="")
     contact_address = StringField(default="")
     contact_website = StringField(default="")
 
-    # Popular Providers Carousel Settings
-    # Auto-scroll interval in milliseconds (default 1.5 seconds)
+    # Providers Carousel
     providers_carousel_speed = IntField(default=1500)
-    # Logo max size in pixels (default 80px)
     providers_logo_size = IntField(default=80)
 
-    # Social Media URLs
+    # Social Media
     social_facebook_url = StringField(default="")
     social_twitter_url = StringField(default="")
     social_linkedin_url = StringField(default="")
     social_youtube_url = StringField(default="")
     social_instagram_url = StringField(default="")
 
-    # Configuration fields for question parsing and generation
+    # 🔥 LLM CONFIG (MISSING BEFORE)
     parsing_instructions = StringField(default="")
     max_retry_count = IntField(default=3)
     temperature = FloatField(default=0.0)
+    top_p = FloatField(default=1.0)
+    frequency_penalty = FloatField(default=0.0)
+    presence_penalty = FloatField(default=0.0)
+    max_output_tokens = IntField(default=2000)
+
     model_selector = StringField(default="gpt-4")
+    gemini_model_selector = StringField(default="gemini-1.5-flash-latest")
     gemini_api_key = StringField(default="")
+
     openai_api_key = StringField(default="")
-    prompts = DictField(default=dict)  # Store prompts as nested dictionary
 
-    meta = {'collection': 'admin_settings', 'strict': False}
+    prompts = DictField(default=dict)
 
+    meta = {
+        'collection': 'admin_settings',
+        'strict': False
+    }
 
 class PrivacyPolicy(Document):
     content = StringField(required=True, default="")

@@ -30,6 +30,8 @@ except ImportError as e:
 try:
     import openai
     OPENAI_AVAILABLE = True
+
+
     print("[views.py] Successfully imported openai at module level")
 except ImportError as e:
     OPENAI_AVAILABLE = False
@@ -97,6 +99,8 @@ def get_valid_gemini_model(model_name=None, genai_client=None):
 
         # Priority list of models to try (in order of preference)
         preferred_models = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
             'gemini-1.5-flash-latest',
             'gemini-1.5-pro-latest',
             'gemini-1.5-flash-001',
@@ -114,10 +118,57 @@ def get_valid_gemini_model(model_name=None, genai_client=None):
                     # Return short name (GenerativeModel accepts both, but short is cleaner)
                     return short_name
 
-            # Check if any available model contains the requested name
-            for full_name, short_name in available_models_list:
-                if model_name in short_name or model_name in full_name:
-                    return short_name
+            # Smart matching for "latest" variants
+            # e.g., gemini-1.5-flash-latest should match gemini-flash-latest
+            if '-latest' in model_name:
+                # Extract the type (flash/pro) from requested model
+                model_parts = model_name.split('-')
+                model_type = None
+                if 'flash' in model_parts:
+                    model_type = 'flash'
+                elif 'pro' in model_parts:
+                    model_type = 'pro'
+                
+                # Try to find matching latest model with same type
+                # Check that the type appears as a separate part, not as substring
+                if model_type:
+                    for full_name, short_name in available_models_list:
+                        if '-latest' in short_name:
+                            short_parts = short_name.split('-')
+                            # Check if the model type is in the parts (exact match in parts)
+                            if model_type in short_parts:
+                                return short_name
+
+            # Smart matching for versioned models (e.g., gemini-2.5-flash)
+            # Extract version and type from requested model
+            model_parts = model_name.split('-')
+            if len(model_parts) >= 3:
+                # Try to find model with same version and type
+                requested_version = None
+                requested_type = None
+                for i, part in enumerate(model_parts):
+                    if part in ['1.5', '2.0', '2.5', '3']:
+                        requested_version = part
+                        if i + 1 < len(model_parts):
+                            requested_type = model_parts[i + 1]
+                        break
+                
+                if requested_version and requested_type:
+                    for full_name, short_name in available_models_list:
+                        available_parts = short_name.split('-')
+                        if requested_version in available_parts and requested_type in available_parts:
+                            return short_name
+
+            # Fallback: Check if model name (without version/latest) matches
+            # Extract core parts (gemini, flash/pro)
+            model_parts = model_name.split('-')
+            core_parts = [p for p in model_parts if p in ['gemini', 'flash', 'pro']]
+            if len(core_parts) >= 2:
+                for full_name, short_name in available_models_list:
+                    short_parts = short_name.split('-')
+                    short_core = [p for p in short_parts if p in ['gemini', 'flash', 'pro']]
+                    if len(short_core) >= 2 and core_parts[-2:] == short_core[-2:]:
+                        return short_name
 
         # Try preferred models in order
         for preferred in preferred_models:
@@ -908,14 +959,47 @@ def get_configuration(request):
         max_retry_count = getattr(settings_obj, 'max_retry_count', None)
         if max_retry_count is None:
             max_retry_count = 3
+        else:
+            max_retry_count = int(max_retry_count)
 
         temperature = getattr(settings_obj, 'temperature', None)
         if temperature is None:
-            temperature = 0
+            temperature = 0.0
+        else:
+            temperature = float(temperature)
 
         model_selector = getattr(settings_obj, 'model_selector', None)
         if model_selector is None:
             model_selector = 'gpt-4'
+
+        gemini_model_selector = getattr(settings_obj, 'gemini_model_selector', None)
+        if gemini_model_selector is None:
+            gemini_model_selector = 'gemini-1.5-flash-latest'
+
+        # Get new model parameters
+        top_p = getattr(settings_obj, 'top_p', None)
+        if top_p is None:
+            top_p = 1.0
+        else:
+            top_p = float(top_p)
+
+        frequency_penalty = getattr(settings_obj, 'frequency_penalty', None)
+        if frequency_penalty is None:
+            frequency_penalty = 0.0
+        else:
+            frequency_penalty = float(frequency_penalty)
+
+        presence_penalty = getattr(settings_obj, 'presence_penalty', None)
+        if presence_penalty is None:
+            presence_penalty = 0.0
+        else:
+            presence_penalty = float(presence_penalty)
+
+        max_output_tokens = getattr(settings_obj, 'max_output_tokens', None)
+        if max_output_tokens is None:
+            max_output_tokens = 2000
+        else:
+            max_output_tokens = int(max_output_tokens)
 
         # Get API keys (for display/validation, but don't send full keys for security)
         gemini_api_key = getattr(settings_obj, 'gemini_api_key', '') or ''
@@ -932,6 +1016,11 @@ def get_configuration(request):
             "max_retry_count": max_retry_count,
             "temperature": temperature,
             "model_selector": model_selector or 'gpt-4',
+            "gemini_model_selector": gemini_model_selector or 'gemini-1.5-flash-latest',
+            "top_p": top_p,
+            "frequency_penalty": frequency_penalty,
+            "presence_penalty": presence_penalty,
+            "max_output_tokens": max_output_tokens,
             "prompts": final_prompts,
             # Masked for security
             "gemini_api_key": mask_api_key(gemini_api_key),
@@ -1006,13 +1095,90 @@ def save_configuration(request):
         if 'parsing_instructions' in data:
             settings_obj.parsing_instructions = data.get(
                 'parsing_instructions', '') or ''
+        # Save all configuration parameters with proper validation
+        # Always save these values if they're in the request (even if 0)
         if 'max_retry_count' in data:
-            settings_obj.max_retry_count = int(data.get('max_retry_count', 3))
+            try:
+                retry_val = data.get('max_retry_count')
+                if retry_val is not None:
+                    settings_obj.max_retry_count = int(retry_val)
+            except (ValueError, TypeError):
+                settings_obj.max_retry_count = 3
+        
         if 'temperature' in data:
-            settings_obj.temperature = float(data.get('temperature', 0))
+            try:
+                temp_val = data.get('temperature')
+                if temp_val is not None:
+                    temp_value = float(temp_val)
+                    settings_obj.temperature = max(0.0, min(2.0, temp_value))  # Clamp between 0 and 2
+            except (ValueError, TypeError):
+                settings_obj.temperature = 0.0
+        
         if 'model_selector' in data:
-            settings_obj.model_selector = data.get(
-                'model_selector', 'gpt-4') or 'gpt-4'
+            model_val = data.get('model_selector')
+            if model_val is not None:
+                settings_obj.model_selector = model_val or 'gpt-4'
+        
+        if 'gemini_model_selector' in data:
+            gemini_val = data.get('gemini_model_selector')
+            if gemini_val is not None:
+                settings_obj.gemini_model_selector = gemini_val or 'gemini-1.5-flash-latest'
+        
+        if 'top_p' in data:
+            try:
+                top_p_val = data.get('top_p')
+                # Handle None, empty string, and valid values (including 0)
+                if top_p_val is not None and top_p_val != '':
+                    top_p_value = float(top_p_val)
+                    settings_obj.top_p = max(0.0, min(1.0, top_p_value))  # Clamp between 0 and 1
+                    print(f"[save_configuration] ✅ Saved top_p: {settings_obj.top_p} (received: {top_p_val}, type: {type(top_p_val)})")
+                else:
+                    print(f"[save_configuration] ⚠️ top_p is None or empty, skipping save")
+            except (ValueError, TypeError) as e:
+                print(f"[save_configuration] ❌ Error saving top_p: {e}")
+                # Don't set default on error, keep existing value
+        
+        if 'frequency_penalty' in data:
+            try:
+                freq_val = data.get('frequency_penalty')
+                # Handle None, empty string, and valid values (including 0)
+                if freq_val is not None and freq_val != '':
+                    freq_value = float(freq_val)
+                    settings_obj.frequency_penalty = max(-2.0, min(2.0, freq_value))  # Clamp between -2 and 2
+                    print(f"[save_configuration] ✅ Saved frequency_penalty: {settings_obj.frequency_penalty} (received: {freq_val}, type: {type(freq_val)})")
+                else:
+                    print(f"[save_configuration] ⚠️ frequency_penalty is None or empty, skipping save")
+            except (ValueError, TypeError) as e:
+                print(f"[save_configuration] ❌ Error saving frequency_penalty: {e}")
+                # Don't set default on error, keep existing value
+        
+        if 'presence_penalty' in data:
+            try:
+                pres_val = data.get('presence_penalty')
+                # Handle None, empty string, and valid values (including 0)
+                if pres_val is not None and pres_val != '':
+                    pres_value = float(pres_val)
+                    settings_obj.presence_penalty = max(-2.0, min(2.0, pres_value))  # Clamp between -2 and 2
+                    print(f"[save_configuration] ✅ Saved presence_penalty: {settings_obj.presence_penalty} (received: {pres_val}, type: {type(pres_val)})")
+                else:
+                    print(f"[save_configuration] ⚠️ presence_penalty is None or empty, skipping save")
+            except (ValueError, TypeError) as e:
+                print(f"[save_configuration] ❌ Error saving presence_penalty: {e}")
+                # Don't set default on error, keep existing value
+        
+        if 'max_output_tokens' in data:
+            try:
+                tokens_val = data.get('max_output_tokens')
+                # Handle None, empty string, and valid values (including 0, but clamp to at least 1)
+                if tokens_val is not None and tokens_val != '':
+                    tokens_value = int(tokens_val)
+                    settings_obj.max_output_tokens = max(1, tokens_value)  # Ensure at least 1
+                    print(f"[save_configuration] ✅ Saved max_output_tokens: {settings_obj.max_output_tokens} (received: {tokens_val}, type: {type(tokens_val)})")
+                else:
+                    print(f"[save_configuration] ⚠️ max_output_tokens is None or empty, skipping save")
+            except (ValueError, TypeError) as e:
+                print(f"[save_configuration] ❌ Error saving max_output_tokens: {e}")
+                # Don't set default on error, keep existing value
         if 'gemini_api_key' in data:
             settings_obj.gemini_api_key = data.get('gemini_api_key', '') or ''
         if 'openai_api_key' in data:
@@ -1173,6 +1339,13 @@ def save_configuration(request):
 
         print(f"[save_configuration] ===== SAVING TO DATABASE =====")
         print(f"[save_configuration] About to save settings_obj...")
+        print(f"[save_configuration] Values before save:")
+        print(f"[save_configuration]   top_p: {getattr(settings_obj, 'top_p', 'NOT SET')}")
+        print(f"[save_configuration]   frequency_penalty: {getattr(settings_obj, 'frequency_penalty', 'NOT SET')}")
+        print(f"[save_configuration]   presence_penalty: {getattr(settings_obj, 'presence_penalty', 'NOT SET')}")
+        print(f"[save_configuration]   max_output_tokens: {getattr(settings_obj, 'max_output_tokens', 'NOT SET')}")
+        print(f"[save_configuration]   temperature: {getattr(settings_obj, 'temperature', 'NOT SET')}")
+        print(f"[save_configuration]   max_retry_count: {getattr(settings_obj, 'max_retry_count', 'NOT SET')}")
         settings_obj.save()
         print(f"[save_configuration] ✅ Settings saved to database")
 
@@ -1251,10 +1424,73 @@ def save_configuration(request):
         print(
             f"[save_configuration] Returning prompts in response: {json.dumps(response_prompts, indent=2, default=str)}")
 
+        # Re-fetch settings to get all saved values for response
+        settings_obj = AdminSettings.objects.first()
+        print(f"[save_configuration] Re-fetched settings_obj, checking saved values...")
+        
+        # Get all saved configuration values (handle 0 values correctly)
+        top_p_val = getattr(settings_obj, 'top_p', None)
+        print(f"[save_configuration] Retrieved top_p from DB: {top_p_val} (type: {type(top_p_val)})")
+        if top_p_val is None:
+            top_p_val = 1.0
+        else:
+            top_p_val = float(top_p_val)
+        print(f"[save_configuration] Final top_p_val for response: {top_p_val}")
+        
+        freq_penalty_val = getattr(settings_obj, 'frequency_penalty', None)
+        print(f"[save_configuration] Retrieved frequency_penalty from DB: {freq_penalty_val} (type: {type(freq_penalty_val)})")
+        if freq_penalty_val is None:
+            freq_penalty_val = 0.0
+        else:
+            freq_penalty_val = float(freq_penalty_val)
+        print(f"[save_configuration] Final freq_penalty_val for response: {freq_penalty_val}")
+        
+        pres_penalty_val = getattr(settings_obj, 'presence_penalty', None)
+        print(f"[save_configuration] Retrieved presence_penalty from DB: {pres_penalty_val} (type: {type(pres_penalty_val)})")
+        if pres_penalty_val is None:
+            pres_penalty_val = 0.0
+        else:
+            pres_penalty_val = float(pres_penalty_val)
+        print(f"[save_configuration] Final pres_penalty_val for response: {pres_penalty_val}")
+        
+        max_tokens_val = getattr(settings_obj, 'max_output_tokens', None)
+        print(f"[save_configuration] Retrieved max_output_tokens from DB: {max_tokens_val} (type: {type(max_tokens_val)})")
+        if max_tokens_val is None:
+            max_tokens_val = 2000
+        else:
+            max_tokens_val = int(max_tokens_val)
+        print(f"[save_configuration] Final max_tokens_val for response: {max_tokens_val}")
+        
+        temp_val = getattr(settings_obj, 'temperature', None)
+        if temp_val is None:
+            temp_val = 0.0
+        else:
+            temp_val = float(temp_val)
+        
+        max_retry_val = getattr(settings_obj, 'max_retry_count', None)
+        if max_retry_val is None:
+            max_retry_val = 3
+        else:
+            max_retry_val = int(max_retry_val)
+        
+        saved_config = {
+            "parsing_instructions": getattr(settings_obj, 'parsing_instructions', '') or '',
+            "max_retry_count": max_retry_val,
+            "temperature": temp_val,
+            "model_selector": getattr(settings_obj, 'model_selector', 'gpt-4') or 'gpt-4',
+            "gemini_model_selector": getattr(settings_obj, 'gemini_model_selector', 'gemini-1.5-flash-latest') or 'gemini-1.5-flash-latest',
+            "top_p": top_p_val,
+            "frequency_penalty": freq_penalty_val,
+            "presence_penalty": pres_penalty_val,
+            "max_output_tokens": max_tokens_val,
+        }
+        print(f"[save_configuration] Final saved_config for response: {json.dumps(saved_config, indent=2, default=str)}")
+
         response_data = {
             "success": True,
             "message": "Configuration saved successfully",
-            "prompts": response_prompts  # Return saved prompts so frontend can update immediately
+            "prompts": response_prompts,  # Return saved prompts so frontend can update immediately
+            "config": saved_config  # Return saved config values so frontend can update immediately
         }
 
         print(
@@ -1604,6 +1840,15 @@ def parse_document(request):
         if not settings_obj:
             settings_obj = AdminSettings()
 
+        # Get model parameters
+        temperature = getattr(settings_obj, 'temperature', 0)
+        top_p = getattr(settings_obj, 'top_p', 1.0)
+        # Use higher default (8000) to prevent MAX_TOKENS errors
+        max_output_tokens = getattr(settings_obj, 'max_output_tokens', 8000)
+        # Ensure minimum of 4000 to avoid truncation issues
+        if max_output_tokens < 4000:
+            max_output_tokens = 8000
+
         # Get prompts
         saved_prompts = getattr(settings_obj, 'prompts', {}) or {}
         prompt1 = saved_prompts.get('prompt1', {})
@@ -1685,9 +1930,14 @@ def parse_document(request):
 
         genai.configure(api_key=gemini_api_key)
 
+        # Get the selected Gemini model from settings
+        gemini_model_selector = getattr(settings_obj, 'gemini_model_selector', None)
+        if gemini_model_selector is None:
+            gemini_model_selector = 'gemini-1.5-flash-latest'
+        
         # Get a valid model name by checking available models
-        model_name = get_valid_gemini_model('gemini-1.5-flash-latest', genai)
-        print(f"[parse_document] Using Gemini model: {model_name}")
+        model_name = get_valid_gemini_model(gemini_model_selector, genai)
+        print(f"[parse_document] Using Gemini model: {model_name} (selected: {gemini_model_selector})")
 
         # Read file content
         file_content = file.read()
@@ -1795,6 +2045,13 @@ def parse_document(request):
                     "error": f"Failed to initialize Gemini model: {str(e)}. Please check your API key and model availability."
                 }, status=500)
 
+        # Prepare generation config for Gemini
+        generation_config = {
+            'temperature': temperature,
+            'top_p': top_p,
+            'max_output_tokens': max_output_tokens
+        }
+
         try:
             if file_ext == 'pdf':
                 # For PDF, send as base64
@@ -1805,16 +2062,31 @@ def parse_document(request):
                     "data": file_base64
                 }
                 try:
-                    response = model.generate_content([full_prompt, file_part])
+                    response = model.generate_content(
+                        [full_prompt, file_part],
+                        generation_config=generation_config
+                    )
+                    # Verify response is valid
+                    if response is None:
+                        return JsonResponse({
+                            "success": False,
+                            "error": f"Model {model_name} returned None response. Please try again or use a different model."
+                        }, status=500)
                 except Exception as gen_error:
                     # If generate_content fails, it might be a model compatibility issue
+                    import traceback
                     error_msg = str(gen_error)
+                    print(f"[parse_document] Error generating content: {error_msg}")
+                    print(traceback.format_exc())
                     if 'not found' in error_msg.lower() or 'not supported' in error_msg.lower():
                         return JsonResponse({
                             "success": False,
                             "error": f"Model {model_name} is not available or not supported. Error: {error_msg}. Please check your Gemini API configuration."
                         }, status=500)
-                    raise
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Failed to generate content with model {model_name}: {error_msg}"
+                    }, status=500)
             elif file_ext == 'docx':
                 # For DOCX, convert to text first
                 try:
@@ -1824,19 +2096,42 @@ def parse_document(request):
                         text_content = "\n".join(
                             [para.text for para in doc.paragraphs])
                         response = model.generate_content(
-                            f"{full_prompt}\n\nDocument content:\n{text_content}")
+                            f"{full_prompt}\n\nDocument content:\n{text_content}",
+                            generation_config=generation_config
+                        )
+                        # Verify response is valid
+                        if response is None:
+                            return JsonResponse({
+                                "success": False,
+                                "error": f"Model {model_name} returned None response. Please try again or use a different model."
+                            }, status=500)
                     except ImportError:
                         # python-docx not installed, try alternative
                         text_content = file_content.decode(
                             'utf-8', errors='ignore')
                         response = model.generate_content(
-                            f"{full_prompt}\n\nDocument content:\n{text_content}")
+                            f"{full_prompt}\n\nDocument content:\n{text_content}",
+                            generation_config=generation_config
+                        )
+                        # Verify response is valid
+                        if response is None:
+                            return JsonResponse({
+                                "success": False,
+                                "error": f"Model {model_name} returned None response. Please try again or use a different model."
+                            }, status=500)
                 except Exception as e:
-                    return JsonResponse({"success": False, "error": f"Failed to read DOCX file: {str(e)}"}, status=400)
+                    import traceback
+                    error_msg = str(e)
+                    print(f"[parse_document] Error processing DOCX: {error_msg}")
+                    print(traceback.format_exc())
+                    return JsonResponse({"success": False, "error": f"Failed to process DOCX file: {error_msg}"}, status=400)
             else:
                 return JsonResponse({"success": False, "error": "Unsupported file type. Please upload PDF or DOCX."}, status=400)
         except Exception as e:
+            import traceback
             error_msg = str(e)
+            print(f"[parse_document] Error in content generation: {error_msg}")
+            print(traceback.format_exc())
             if 'not found' in error_msg.lower() or 'not supported' in error_msg.lower():
                 return JsonResponse({
                     "success": False,
@@ -1846,9 +2141,223 @@ def parse_document(request):
 
         # Parse response
         try:
-            response_text = response.text if hasattr(
-                response, 'text') else str(response)
+            if response is None:
+                return JsonResponse({"success": False, "error": "No response received from Gemini model"}, status=500)
+            
+            # Check for finish_reason first to handle blocked/filtered responses
+            finish_reason = None
+            finish_reason_name = None
+            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason'):
+                    finish_reason = candidate.finish_reason
+                    # Map finish_reason codes to names
+                    finish_reason_map = {
+                        0: "FINISH_REASON_UNSPECIFIED",
+                        1: "STOP",  # Normal completion
+                        2: "MAX_TOKENS",  # Hit token limit
+                        3: "SAFETY",  # Blocked by safety filters
+                        4: "RECITATION",  # Blocked due to recitation
+                        5: "OTHER"
+                    }
+                    finish_reason_name = finish_reason_map.get(finish_reason, f"UNKNOWN({finish_reason})")
+                    print(f"[parse_document] Finish reason: {finish_reason} ({finish_reason_name})")
+                    
+                    # Handle blocked/filtered responses
+                    if finish_reason == 3:  # SAFETY
+                        safety_ratings = []
+                        safety_details = []
+                        if hasattr(candidate, 'safety_ratings'):
+                            safety_ratings = candidate.safety_ratings
+                            # Extract safety rating details
+                            for rating in safety_ratings:
+                                if hasattr(rating, 'category') and hasattr(rating, 'probability'):
+                                    category = getattr(rating, 'category', 'UNKNOWN')
+                                    probability = getattr(rating, 'probability', 'UNKNOWN')
+                                    # Only include HIGH or MEDIUM probability ratings
+                                    if hasattr(probability, 'name'):
+                                        prob_name = probability.name
+                                        if prob_name in ['HIGH', 'MEDIUM']:
+                                            safety_details.append(f"{category.name if hasattr(category, 'name') else str(category)}: {prob_name}")
+                        
+                        error_msg = "Content was blocked by Gemini safety filters."
+                        if safety_details:
+                            error_msg += f" Blocked categories: {', '.join(safety_details)}."
+                        error_msg += " Please review your document content and try again."
+                        
+                        return JsonResponse({
+                            "success": False,
+                            "error": error_msg
+                        }, status=400)
+                    elif finish_reason == 4:  # RECITATION
+                        return JsonResponse({
+                            "success": False,
+                            "error": "Content was blocked due to potential recitation of copyrighted material. Please ensure your document contains original content."
+                        }, status=400)
+                    # Note: For MAX_TOKENS (2), we still try to extract partial content
+                    # Don't return error immediately - let the extraction logic handle it
+            
+            # Try different ways to get response text
+            # IMPORTANT: Don't use hasattr() on response.text as it triggers the property getter
+            # Instead, check finish_reason first, then try to access text in try-except
+            response_text = None
+            
+            # For MAX_TOKENS, check candidates first as text property may fail
+            if finish_reason == 2:
+                # Try to extract from candidates first for MAX_TOKENS
+                if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                    try:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            parts = candidate.content.parts
+                            if parts and len(parts) > 0:
+                                response_text = ''.join([part.text for part in parts if hasattr(part, 'text') and part.text])
+                                if response_text:
+                                    print(f"[parse_document] Extracted content from candidates for MAX_TOKENS response")
+                    except Exception as candidate_error:
+                        print(f"[parse_document] Error accessing candidates for MAX_TOKENS: {candidate_error}")
+                
+                # If MAX_TOKENS and no content extracted, silently use higher default
+                # Don't show error - just log and continue (will be handled gracefully below)
+                if response_text is None:
+                    print(f"[parse_document] MAX_TOKENS detected with no content. This may indicate the response was too large. Continuing with graceful handling...")
+                    # Continue to normal flow - will be handled gracefully
+            
+            # If we don't have text yet and it's not MAX_TOKENS, try the text property (but catch the error)
+            if response_text is None:
+                try:
+                    # Directly access text property - will raise ValueError if no valid Part
+                    response_text = response.text
+                except (ValueError, AttributeError) as text_error:
+                    error_msg = str(text_error)
+                    print(f"[parse_document] Error accessing response.text: {error_msg}")
+                    
+                    # Check if error is about missing Part
+                    if "requires the response to contain a valid" in error_msg or "none were returned" in error_msg:
+                        if finish_reason == 3:
+                            return JsonResponse({
+                                "success": False,
+                                "error": "Content was blocked by Gemini safety filters. Please review your document content."
+                            }, status=400)
+                        elif finish_reason == 4:
+                            return JsonResponse({
+                                "success": False,
+                                "error": "Content was blocked due to potential recitation. Please ensure your document contains original content."
+                            }, status=400)
+                        elif finish_reason == 2:
+                            # For MAX_TOKENS, don't return error - continue to try candidates
+                            print(f"[parse_document] MAX_TOKENS: response.text failed, trying candidates...")
+                        else:
+                            return JsonResponse({
+                                "success": False,
+                                "error": f"Response does not contain valid content. Finish reason: {finish_reason_name or 'Unknown'}. Please try again or use a different model."
+                            }, status=400)
+                    
+                    # Try alternative methods (candidates) if text property failed
+                    if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                        try:
+                            candidate = response.candidates[0]
+                            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                                parts = candidate.content.parts
+                                if parts and len(parts) > 0:
+                                    response_text = ''.join([part.text for part in parts if hasattr(part, 'text') and part.text])
+                        except Exception as candidate_error:
+                            print(f"[parse_document] Error accessing candidates: {candidate_error}")
+                except Exception as other_error:
+                    # Catch any other exceptions
+                    error_msg = str(other_error)
+                    print(f"[parse_document] Unexpected error accessing response.text: {error_msg}")
+                    # Try candidates as fallback
+                    if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                        try:
+                            candidate = response.candidates[0]
+                            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                                parts = candidate.content.parts
+                                if parts and len(parts) > 0:
+                                    response_text = ''.join([part.text for part in parts if hasattr(part, 'text') and part.text])
+                        except Exception as candidate_error:
+                            print(f"[parse_document] Error accessing candidates: {candidate_error}")
+            
+            # If still no text, try candidates directly
+            if response_text is None and hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                try:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content'):
+                        if hasattr(candidate.content, 'parts'):
+                            parts = candidate.content.parts
+                            if parts and len(parts) > 0:
+                                response_text = ''.join([part.text for part in parts if hasattr(part, 'text') and part.text])
+                except Exception as candidate_error:
+                    print(f"[parse_document] Error accessing candidates: {candidate_error}")
+            
+            if response_text is None:
+                # Check if we have a finish_reason that explains why
+                if finish_reason == 3:
+                    return JsonResponse({
+                        "success": False,
+                        "error": "Content was blocked by Gemini safety filters. Please review your document content."
+                    }, status=400)
+                elif finish_reason == 4:
+                    return JsonResponse({
+                        "success": False,
+                        "error": "Content was blocked due to potential recitation. Please ensure your document contains original content."
+                    }, status=400)
+                elif finish_reason == 2:  # MAX_TOKENS
+                    # For MAX_TOKENS, try one more time to extract from candidates directly
+                    if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            parts = candidate.content.parts
+                            if parts and len(parts) > 0:
+                                try:
+                                    response_text = ''.join([part.text for part in parts if hasattr(part, 'text') and part.text])
+                                    if response_text:
+                                        print(f"[parse_document] Warning: Response was truncated (MAX_TOKENS) but extracted partial content")
+                                        # Continue processing with partial content
+                                except Exception as e:
+                                    print(f"[parse_document] Error extracting from parts: {e}")
+                    
+                    # If still no content after all attempts, continue to empty response handling
+                    # Don't return error for MAX_TOKENS - let it be handled gracefully
+                    if response_text is None:
+                        print(f"[parse_document] MAX_TOKENS: No content could be extracted after all attempts. Continuing...")
+                elif finish_reason is not None:
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Could not extract text from Gemini response. Finish reason: {finish_reason_name or 'Unknown'}. Please try again or use a different model."
+                    }, status=500)
+                
+                # Last resort: convert to string
+                try:
+                    response_text = str(response)
+                except Exception as str_error:
+                    print(f"[parse_document] Error converting response to string: {str_error}")
+                    return JsonResponse({"success": False, "error": "Could not extract text from Gemini response. Please try again or use a different model."}, status=500)
+            
+            if not response_text or len(response_text.strip()) == 0:
+                if finish_reason == 3:
+                    return JsonResponse({
+                        "success": False,
+                        "error": "Content was blocked by Gemini safety filters. Please review your document content."
+                    }, status=400)
+                elif finish_reason == 2:
+                    # For MAX_TOKENS, provide a helpful but non-blocking message
+                    # The higher default (8000) should prevent this in most cases
+                    print(f"[parse_document] MAX_TOKENS: Empty response. This is rare with default max_output_tokens=8000.")
+                    return JsonResponse({
+                        "success": False,
+                        "error": "The document is too large to process. Please try with a smaller document or split it into multiple parts."
+                    }, status=400)
+                return JsonResponse({"success": False, "error": "Empty response received from Gemini model. Please try again or use a different model."}, status=500)
+            
+            # Log warning if response was truncated but we have content
+            if finish_reason == 2:
+                print(f"[parse_document] Warning: Response was truncated (MAX_TOKENS) but processing available content ({len(response_text)} chars)")
+                
         except Exception as e:
+            import traceback
+            print(f"[parse_document] Error getting response text: {str(e)}")
+            print(traceback.format_exc())
             return JsonResponse({"success": False, "error": f"Failed to get response text: {str(e)}"}, status=500)
 
         # Extract JSON from response
@@ -1860,25 +2369,232 @@ def parse_document(request):
             print(
                 f"[parse_document] Response preview: {response_text[:500]}...")
 
-            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            # Clean the response text - remove markdown code block markers
+            cleaned_text = response_text.strip()
+            
+            # Remove markdown code block markers if present
+            if cleaned_text.startswith('```json'):
+                cleaned_text = cleaned_text[7:]  # Remove ```json
+            elif cleaned_text.startswith('```'):
+                cleaned_text = cleaned_text[3:]  # Remove ```
+            
+            if cleaned_text.endswith('```'):
+                cleaned_text = cleaned_text[:-3]  # Remove trailing ```
+            
+            cleaned_text = cleaned_text.strip()
+            
+            # If MAX_TOKENS and content is very short, it's likely incomplete
+            if finish_reason == 2 and len(cleaned_text) < 100:
+                return JsonResponse({
+                    "success": False,
+                    "error": "Response was truncated due to token limit and the content is too incomplete to parse. Please increase max_output_tokens in settings or try with a smaller document."
+                }, status=400)
+            
+            # Try to find JSON array in the cleaned text
+            # First, try to find a complete JSON array
+            json_match = re.search(r'\[.*\]', cleaned_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 print(
                     f"[parse_document] Found JSON array, length: {len(json_str)}")
-                questions_data = json.loads(json_str)
+                try:
+                    questions_data = json.loads(json_str)
+                except json.JSONDecodeError as json_err:
+                    # If the JSON is incomplete, try to fix common issues
+                    print(f"[parse_document] JSON parse error, attempting to fix: {json_err}")
+                    
+                    # If MAX_TOKENS and JSON is incomplete, try to repair it
+                    if finish_reason == 2:
+                        # Try to fix incomplete JSON by closing strings, objects, and arrays
+                        repaired_json = json_str
+                        in_string = False
+                        escape_next = False
+                        bracket_count = 0
+                        brace_count = 0
+                        
+                        # First, find where we are in the JSON structure
+                        for i, char in enumerate(json_str):
+                            if escape_next:
+                                escape_next = False
+                                continue
+                            if char == '\\':
+                                escape_next = True
+                                continue
+                            if char == '"' and not escape_next:
+                                in_string = not in_string
+                            if not in_string:
+                                if char == '[':
+                                    bracket_count += 1
+                                elif char == ']':
+                                    bracket_count -= 1
+                                elif char == '{':
+                                    brace_count += 1
+                                elif char == '}':
+                                    brace_count -= 1
+                        
+                        # If we're in a string, close it
+                        if in_string:
+                            # Find the last unclosed quote position
+                            last_quote = json_str.rfind('"')
+                            if last_quote >= 0:
+                                # Check if there's content after the quote that might be incomplete
+                                after_quote = json_str[last_quote+1:].strip()
+                                if after_quote and not after_quote.startswith(','):
+                                    # String is incomplete, close it
+                                    repaired_json = json_str + '"'
+                                else:
+                                    repaired_json = json_str
+                            else:
+                                repaired_json = json_str + '"'
+                        else:
+                            repaired_json = json_str
+                        
+                        # Close any open objects
+                        while brace_count > 0:
+                            repaired_json += '}'
+                            brace_count -= 1
+                        
+                        # Close any open arrays (but keep at least one for the main array)
+                        while bracket_count > 1:
+                            repaired_json += ']'
+                            bracket_count -= 1
+                        
+                        # Try to parse the repaired JSON
+                        try:
+                            questions_data = json.loads(repaired_json)
+                            print(f"[parse_document] Successfully repaired incomplete JSON from MAX_TOKENS truncation")
+                        except json.JSONDecodeError:
+                            # If repair failed, check if we can extract any valid partial JSON
+                            # Try to find the last complete object in the array
+                            first_bracket = repaired_json.find('[')
+                            if first_bracket >= 0:
+                                # Try to find complete objects before the truncation
+                                potential_json = repaired_json[first_bracket:]
+                                # Look for the last complete object
+                                last_complete_obj_end = -1
+                                brace_count = 0
+                                in_string = False
+                                escape_next = False
+                                
+                                for i, char in enumerate(potential_json):
+                                    if escape_next:
+                                        escape_next = False
+                                        continue
+                                    if char == '\\':
+                                        escape_next = True
+                                        continue
+                                    if char == '"' and not escape_next:
+                                        in_string = not in_string
+                                        continue
+                                    if not in_string:
+                                        if char == '{':
+                                            brace_count += 1
+                                        elif char == '}':
+                                            brace_count -= 1
+                                            if brace_count == 0:
+                                                # Found a complete object, check if it's followed by valid JSON
+                                                # Look ahead to see if we can close the array
+                                                remaining = potential_json[i+1:].strip()
+                                                if remaining.startswith(',') or remaining.startswith(']') or not remaining:
+                                                    last_complete_obj_end = i
+                                
+                                if last_complete_obj_end > 0:
+                                    # Extract up to the last complete object and close the array
+                                    partial_json = potential_json[:last_complete_obj_end+1] + ']'
+                                    try:
+                                        questions_data = json.loads(partial_json)
+                                        print(f"[parse_document] Extracted partial JSON with {len(questions_data)} question(s) from truncated response")
+                                    except json.JSONDecodeError:
+                                        # If MAX_TOKENS and we can't parse, return helpful error
+                                        raise json.JSONDecodeError(
+                                            "Response was truncated due to token limit and JSON is too incomplete to parse. Please increase max_output_tokens in settings.",
+                                            json_str, len(json_str)
+                                        )
+                                else:
+                                    # If MAX_TOKENS and we can't extract valid JSON, return helpful error
+                                    raise json.JSONDecodeError(
+                                        "Response was truncated due to token limit and JSON is too incomplete to parse. Please increase max_output_tokens in settings.",
+                                        json_str, len(json_str)
+                                    )
+                            else:
+                                raise json_err
+                    else:
+                        # For non-MAX_TOKENS errors, try the original repair logic
+                        # Try to find complete JSON by looking for balanced brackets
+                        bracket_count = 0
+                        last_valid_pos = -1
+                        in_string = False
+                        escape_next = False
+                        
+                        for i, char in enumerate(json_str):
+                            if escape_next:
+                                escape_next = False
+                                continue
+                            if char == '\\':
+                                escape_next = True
+                                continue
+                            if char == '"' and not escape_next:
+                                in_string = not in_string
+                                continue
+                            if not in_string:
+                                if char == '[':
+                                    bracket_count += 1
+                                elif char == ']':
+                                    bracket_count -= 1
+                                    if bracket_count == 0:
+                                        last_valid_pos = i
+                                        break
+                        
+                        if last_valid_pos > 0:
+                            json_str = json_str[:last_valid_pos + 1]
+                            try:
+                                questions_data = json.loads(json_str)
+                            except json.JSONDecodeError:
+                                raise json_err
+                        else:
+                            raise json_err
             else:
-                # Try parsing the whole response as JSON
-                print(f"[parse_document] Trying to parse entire response as JSON")
-                questions_data = json.loads(response_text)
+                # Try parsing the whole cleaned response as JSON
+                print(f"[parse_document] Trying to parse entire cleaned response as JSON")
+                try:
+                    questions_data = json.loads(cleaned_text)
+                except json.JSONDecodeError:
+                    # If that fails, try to extract JSON object instead of array
+                    obj_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+                    if obj_match:
+                        json_str = obj_match.group()
+                        questions_data = json.loads(json_str)
+                        # Convert single object to list
+                        if not isinstance(questions_data, list):
+                            questions_data = [questions_data]
+                    else:
+                        raise
 
             print(
                 f"[parse_document] Successfully parsed {len(questions_data) if isinstance(questions_data, list) else 1} question(s)")
         except json.JSONDecodeError as e:
             print(f"[parse_document] JSON decode error: {str(e)}")
             print(f"[parse_document] Full response: {response_text}")
-            return JsonResponse({"success": False, "error": f"Failed to parse AI response as JSON: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
+            
+            # Check if error is related to MAX_TOKENS truncation
+            if finish_reason == 2:
+                error_msg = str(e)
+                if "truncated due to token limit" in error_msg or "too incomplete to parse" in error_msg:
+                    return JsonResponse({
+                        "success": False,
+                        "error": "Response was truncated due to token limit and the JSON is too incomplete to parse. Please increase max_output_tokens in settings (recommended: 4000-8000) or try with a smaller document."
+                    }, status=400)
+                else:
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Response was truncated due to token limit and could not be parsed as JSON: {str(e)}. Please increase max_output_tokens in settings or try with a smaller document."
+                    }, status=400)
+            else:
+                return JsonResponse({"success": False, "error": f"Failed to parse AI response as JSON: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
         except Exception as e:
+            import traceback
             print(f"[parse_document] Parse error: {str(e)}")
+            print(traceback.format_exc())
             print(f"[parse_document] Full response: {response_text}")
             return JsonResponse({"success": False, "error": f"Failed to parse AI response: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
 
@@ -2430,6 +3146,10 @@ def generate_from_input(request):
         temperature = getattr(settings_obj, 'temperature', 0)
         model_name = getattr(
             settings_obj, 'model_selector', 'gpt-4') or 'gpt-4'
+        top_p = getattr(settings_obj, 'top_p', 1.0)
+        frequency_penalty = getattr(settings_obj, 'frequency_penalty', 0.0)
+        presence_penalty = getattr(settings_obj, 'presence_penalty', 0.0)
+        max_output_tokens = getattr(settings_obj, 'max_output_tokens', 2000)
 
         saved_count = 0
         errors = []
@@ -2472,7 +3192,10 @@ def generate_from_input(request):
                                 {"role": "user", "content": full_prompt}
                             ],
                             temperature=temperature,
-                            max_tokens=2000
+                            top_p=top_p,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                            max_tokens=max_output_tokens
                         )
                         response_text = response.choices[0].message.content.strip(
                         )
@@ -2486,7 +3209,10 @@ def generate_from_input(request):
                                 {"role": "user", "content": full_prompt}
                             ],
                             temperature=temperature,
-                            max_tokens=2000
+                            top_p=top_p,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                            max_tokens=max_output_tokens
                         )
                         response_text = response.choices[0].message.content.strip(
                         )
@@ -2851,5 +3577,4 @@ def get_questions_by_session(request, session_id):
         import traceback
         print(traceback.format_exc())
         return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
