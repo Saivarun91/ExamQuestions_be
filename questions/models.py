@@ -106,7 +106,7 @@ class CraftsmanQuestion(Document):
     # List of {text: "option text", image: "url"}
     options = ListField(DictField(), required=True)
     # List of correct answer texts
-    correct_answers = ListField(StringField(), required=True)
+    correct_answers = ListField(StringField(), required=False)
     explanation = StringField(default=None)
 
     # Optional fields
@@ -119,7 +119,7 @@ class CraftsmanQuestion(Document):
     # 'generated' = AI-generated from input questions
     # 'manual_review' = manually reviewed/edited
     status = StringField(required=True, choices=[
-                         'input', 'generated', 'manual_review'], default='input')
+                         'input', 'generated', 'manual_review','validated','pending','approved','rejected','clean','needs_review',], default='input')
 
     # Metadata
     created_at = DateTimeField(default=datetime.datetime.utcnow)

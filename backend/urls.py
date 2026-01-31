@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from .sitemap import sitemap_view
 
+print("🔥 MAIN URLS LOADED 🔥")
 urlpatterns = [
     path('admin/', admin.site.urls),
     # Specific API paths first (before catch-all patterns)

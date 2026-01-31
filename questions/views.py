@@ -14,6 +14,11 @@ import csv
 import io
 import datetime
 import json
+import re
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # Try to import google.generativeai at module level for better error handling
 try:
@@ -847,8 +852,10 @@ def get_configuration(request):
         # Get or create AdminSettings
         settings_obj = AdminSettings.objects.first()
         if not settings_obj:
-            settings_obj = AdminSettings()
-            settings_obj.save()
+            return JsonResponse({
+                "success": False,
+                "error": "Admin Settings not configured. Please save prompts in Admin panel."
+            }, status=400)
 
         # Retrieve saved configuration from AdminSettings
         # Since AdminSettings has strict=False, we can store additional fields
@@ -890,18 +897,12 @@ def get_configuration(request):
                 "version": "v1.5.2",
                 "description": "Verify accuracy of generated questions",
                 "lastUpdated": ""
-            },
-            "prompt4": {
-                "prompt": "",
-                "version": "v1.2.0",
-                "description": "Format questions for export",
-                "lastUpdated": ""
             }
         }
 
         # Return saved prompts exactly as they are, only fill in defaults for missing fields
         final_prompts = {}
-        for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+        for key in ['prompt1', 'prompt2', 'prompt3']:
             try:
                 if key in saved_prompts and isinstance(saved_prompts[key], dict):
                     # Use saved data as-is, only fill missing fields with defaults
@@ -1234,15 +1235,14 @@ def save_configuration(request):
             default_prompts = {
                 "prompt1": {"version": "v2.1.0", "description": "Extract individual questions from uploaded document"},
                 "prompt2": {"version": "v1.8.0", "description": "Create new questions based on parsed content"},
-                "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"},
-                "prompt4": {"version": "v1.2.0", "description": "Format questions for export"}
+                "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"}
             }
 
             # Save prompts exactly as received from frontend, preserving only version/description if not provided
             merged_prompts = {}
             current_time = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
-            for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+            for key in ['prompt1', 'prompt2', 'prompt3']:
                 # Start with existing saved data (if any)
                 if key in existing_prompts and isinstance(existing_prompts[key], dict):
                     merged_prompts[key] = existing_prompts[key].copy()
@@ -1323,7 +1323,7 @@ def save_configuration(request):
                 f"[save_configuration] Final merged prompts keys: {list(merged_prompts.keys())}")
 
             # DEBUG: Check each prompt before saving
-            for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+            for key in ['prompt1', 'prompt2', 'prompt3']:
                 if key in merged_prompts:
                     prompt_obj = merged_prompts[key]
                     print(
@@ -1393,11 +1393,10 @@ def save_configuration(request):
         default_prompts = {
             "prompt1": {"version": "v2.1.0", "description": "Extract individual questions from uploaded document"},
             "prompt2": {"version": "v1.8.0", "description": "Create new questions based on parsed content"},
-            "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"},
-            "prompt4": {"version": "v1.2.0", "description": "Format questions for export"}
+            "prompt3": {"version": "v1.5.2", "description": "Verify accuracy of generated questions"}
         }
 
-        for key in ['prompt1', 'prompt2', 'prompt3', 'prompt4']:
+        for key in ['prompt1', 'prompt2', 'prompt3']:
             if key in saved_prompts_response and isinstance(saved_prompts_response[key], dict):
                 response_prompts[key] = saved_prompts_response[key].copy()
                 # Ensure all fields exist with proper defaults (but don't overwrite existing values)
@@ -1526,8 +1525,24 @@ def download_csv(request):
                 "error": "Invalid question type. Must be 'input', 'generated', or 'manual_review'"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Build query
-        base_query = CraftsmanQuestion.objects(status=question_type)
+        # Build query - match the logic from get_questions_by_type
+        if question_type == 'input':
+            base_query = CraftsmanQuestion.objects(status='input')
+        elif question_type == 'generated':
+            # Show all generated questions (both validated and not validated)
+            base_query = CraftsmanQuestion.objects(status__in=['generated', 'manual_review'])
+        elif question_type == 'manual_review':
+            # Manual review CSV = all Gemini-generated questions
+            # including manually edited ones, but ONLY for this document
+            base_query = CraftsmanQuestion.objects(
+                status__in=[
+                    'generated',
+                    'manual_review',
+                    'approved',
+                    'pending',
+                    'rejected'
+                ]
+            )
 
         # Filter by session if provided
         if session_id:
@@ -1547,7 +1562,8 @@ def download_csv(request):
         else:
             # If no session_id, return empty for input/generated (new session)
             if question_type == 'manual_review':
-                questions = base_query.order_by('-created_at')
+                # Manual review is session-specific - need session_id to show questions
+                questions = base_query.none()
             else:
                 questions = base_query.none()
 
@@ -1557,20 +1573,46 @@ def download_csv(request):
 
         writer = csv.writer(response)
 
-        # Write header
-        writer.writerow([
-            'Question',
-            'Answer Option A', 'Explanation A',
-            'Answer Option B', 'Explanation B',
-            'Answer Option C', 'Explanation C',
-            'Answer Option D', 'Explanation D',
-            'Answer Option E', 'Explanation E',
-            'Answer Option F', 'Explanation F',
-            'Correct Answers',
-            'Overall Explanation',
-            'Question Type',
-            'Domain/Tags'
-        ])
+        # Write header - different formats for different question types
+        if question_type == 'input':
+            # Input: Only Question and Answer Options (no explanations, no correct answers, no question type, no domain)
+            writer.writerow([
+                'Question',
+                'Answer Option A',
+                'Answer Option B',
+                'Answer Option C',
+                'Answer Option D',
+                'Answer Option E',
+                'Answer Option F'
+            ])
+        elif question_type == 'manual_review':
+            # Manual Review: Everything including explanations (no Domain column)
+            writer.writerow([
+                'Question',
+                'Answer Option A', 'Explanation A',
+                'Answer Option B', 'Explanation B',
+                'Answer Option C', 'Explanation C',
+                'Answer Option D', 'Explanation D',
+                'Answer Option E', 'Explanation E',
+                'Answer Option F', 'Explanation F',
+                'Correct Answers',
+                'Overall Explanation',
+                'Question Type'
+            ])
+        else:
+            # Generated: Everything including explanations (no Domain column)
+            writer.writerow([
+                'Question',
+                'Answer Option A', 'Explanation A',
+                'Answer Option B', 'Explanation B',
+                'Answer Option C', 'Explanation C',
+                'Answer Option D', 'Explanation D',
+                'Answer Option E', 'Explanation E',
+                'Answer Option F', 'Explanation F',
+                'Correct Answers',
+                'Overall Explanation',
+                'Question Type'
+            ])
 
         # Write questions
         for question in questions:
@@ -1598,30 +1640,41 @@ def download_csv(request):
             option_texts = [opt['text'] for opt in option_data if opt['text']]
 
             for correct_answer in (question.correct_answers or []):
-                correct_text = str(correct_answer).strip()
-                # Find matching option index
+                correct_text = str(correct_answer).strip().lower()
                 found = False
-                for idx, opt_text in enumerate(option_texts):
-                    if opt_text.strip() == correct_text or opt_text.strip().lower() == correct_text.lower():
-                        # Use 1-based numbering (1, 2, 3, 4, 5, 6)
-                        correct_answers_numbers.append(str(idx + 1))
+
+                # Check if answer is in "option_a", "option_b" format
+                option_letter_match = re.match(r'^option[_\s]*([a-f])$', correct_text)
+                if option_letter_match:
+                    letter = option_letter_match.group(1).lower()
+                    letter_idx = ord(letter) - ord('a')  # a=0, b=1, etc.
+                    if letter_idx < len(option_texts):
+                        correct_answers_numbers.append(str(letter_idx + 1))
                         found = True
-                        break
-                # If not found, try to match by number (if answer is already a number)
+
+                # Try to match by option text (case-insensitive)
+                if not found:
+                    for idx, opt_text in enumerate(option_texts):
+                        if opt_text.strip().lower() == correct_text:
+                            correct_answers_numbers.append(str(idx + 1))
+                            found = True
+                            break
+
+                # Try to match by number (if answer is already a number)
                 if not found:
                     try:
-                        # Check if correct_text is a number (1-6)
                         num = int(correct_text)
                         if 1 <= num <= len(option_texts):
                             correct_answers_numbers.append(str(num))
                             found = True
                     except ValueError:
                         pass
-                # If still not found, try to match by letter (A, B, C, D, E, F)
+
+                # Try to match by letter (a, b, c, d, e, f)
                 if not found:
-                    option_letters = ['A', 'B', 'C', 'D', 'E', 'F']
-                    if correct_text.upper() in option_letters:
-                        letter_idx = option_letters.index(correct_text.upper())
+                    option_letters = ['a', 'b', 'c', 'd', 'e', 'f']
+                    if correct_text in option_letters:
+                        letter_idx = option_letters.index(correct_text)
                         if letter_idx < len(option_texts):
                             correct_answers_numbers.append(str(letter_idx + 1))
                             found = True
@@ -1639,21 +1692,46 @@ def download_csv(request):
                 else:
                     question_type_display = 'multi-correct'
 
-            # Write row
-            writer.writerow([
-                question.question_text or '',
-                option_data[0]['text'], option_data[0]['explanation'],
-                option_data[1]['text'], option_data[1]['explanation'],
-                option_data[2]['text'], option_data[2]['explanation'],
-                option_data[3]['text'], option_data[3]['explanation'],
-                option_data[4]['text'], option_data[4]['explanation'],
-                option_data[5]['text'], option_data[5]['explanation'],
-                ', '.join(
-                    correct_answers_numbers) if correct_answers_numbers else '',
-                question.explanation or '',
-                question_type_display,
-                ', '.join(question.tags) if question.tags else ''
-            ])
+            # Write row - different formats for different question types
+            if question_type == 'input':
+                # Input: Only Question and Answer Options (no explanations, no correct answers, no question type, no domain)
+                writer.writerow([
+                    question.question_text or '',
+                    option_data[0]['text'],
+                    option_data[1]['text'],
+                    option_data[2]['text'],
+                    option_data[3]['text'],
+                    option_data[4]['text'],
+                    option_data[5]['text']
+                ])
+            elif question_type == 'manual_review':
+                # Manual Review: All columns except Domain
+                writer.writerow([
+                    question.question_text or '',
+                    option_data[0]['text'], option_data[0]['explanation'],
+                    option_data[1]['text'], option_data[1]['explanation'],
+                    option_data[2]['text'], option_data[2]['explanation'],
+                    option_data[3]['text'], option_data[3]['explanation'],
+                    option_data[4]['text'], option_data[4]['explanation'],
+                    option_data[5]['text'], option_data[5]['explanation'],
+                    (', '.join(sorted(set(correct_answers_numbers), key=int)) if correct_answers_numbers else ''),
+                    (question.explanation or '').strip(),
+                    question_type_display
+                ])
+            else:
+                # Generated: All columns except Domain
+                writer.writerow([
+                    question.question_text or '',
+                    option_data[0]['text'], option_data[0]['explanation'],
+                    option_data[1]['text'], option_data[1]['explanation'],
+                    option_data[2]['text'], option_data[2]['explanation'],
+                    option_data[3]['text'], option_data[3]['explanation'],
+                    option_data[4]['text'], option_data[4]['explanation'],
+                    option_data[5]['text'], option_data[5]['explanation'],
+                    (', '.join(sorted(set(correct_answers_numbers), key=int)) if correct_answers_numbers else ''),
+                    (question.explanation or '').strip(),
+                    question_type_display
+                ])
 
         print(
             f"[download_csv] Generated CSV with {questions.count()} questions")
@@ -1695,9 +1773,10 @@ def get_counts(request):
                     id=ObjectId(session_id))
                 # Count questions from this session
                 input_count = CraftsmanQuestion.objects(
-                    status='input', parsing_session=parsing_session).count()
+                    status='input' or 'approved' or 'rejected' or 'pending' or 'validated', parsing_session=parsing_session).count()
+                # Count all generated questions (both validated and not validated)
                 generated_count = CraftsmanQuestion.objects(
-                    status='generated', parsing_session=parsing_session).count()
+                    status__in=['generated', 'manual_review','approved','rejected','pending','validated'], parsing_session=parsing_session).count()
             except ParsingSession.DoesNotExist:
                 # Session doesn't exist, return 0
                 input_count = 0
@@ -1709,9 +1788,21 @@ def get_counts(request):
             print(
                 f"[get_counts] No session_id provided - returning 0 for input and generated (new session)")
 
-        # Manual review queue is always global (not session-specific)
-        manual_review_count = CraftsmanQuestion.objects(
-            status='manual_review').count()
+        # Manual review queue is session-specific - show only questions from current session
+        # Count questions that were validated by Gemini AI (both passed and failed) for this session
+        if session_id and ObjectId.is_valid(session_id):
+            try:
+                parsing_session = ParsingSession.objects.get(id=ObjectId(session_id))
+                manual_review_statuses = ['generated', 'manual_review','pending', 'needs_review','clean','approved','rejected','validated']
+                manual_review_count = CraftsmanQuestion.objects(
+                    status__in=manual_review_statuses,
+                    parsing_session=parsing_session
+                ).count()
+            except ParsingSession.DoesNotExist:
+                manual_review_count = 0
+        else:
+            # No session_id - return 0 for manual review (session-specific)
+            manual_review_count = 0
 
         print(
             f"[get_counts] Counted: input={input_count}, generated={generated_count}, manual_review={manual_review_count}")
@@ -1760,11 +1851,17 @@ def get_questions_by_type(request, question_type):
             print(f"[get_questions_by_type] Filtering for status='input'")
             base_query = CraftsmanQuestion.objects(status='input')
         elif question_type == 'generated':
-            print(f"[get_questions_by_type] Filtering for status='generated'")
-            base_query = CraftsmanQuestion.objects(status='generated')
+            # All AI-generated questions (both validated and not validated by Gemini AI)
+            # This includes questions with status='generated' (validated/passed) and status='manual_review' (validated/failed)
+            print("[get_questions_by_type] Filtering for status in ['generated', 'manual_review'] (All AI-generated questions)")
+            base_query = CraftsmanQuestion.objects(status__in=['generated', 'manual_review'])
+
         elif question_type == 'manual_review':
-            print(f"[get_questions_by_type] Filtering for status='manual_review'")
-            base_query = CraftsmanQuestion.objects(status='manual_review')
+            # Questions that Gemini has already validated (both passed and failed)
+            # Manual review queue shows all generated questions (both 'generated' and 'manual_review' status)
+            print("[get_questions_by_type] Filtering for status in ['generated', 'manual_review'] (Gemini validated)")
+            base_query = CraftsmanQuestion.objects(status__in=['generated', 'manual_review','approved','rejected','pending','validated','needs_review','clean'])
+
         else:
             return Response({
                 "success": False,
@@ -1782,33 +1879,64 @@ def get_questions_by_type(request, question_type):
             try:
                 parsing_session = ParsingSession.objects.get(
                     id=ObjectId(session_id))
+                print(f"[get_questions_by_type] Filtering by session: {session_id}, Session name: {parsing_session.session_name}")
+                # Debug: Check total questions with this status before session filter
+                total_before_filter = base_query.count()
+                print(f"[get_questions_by_type] Total questions with this status (before session filter): {total_before_filter}")
+                
+                # Try filtering by ObjectId directly as well for debugging
+                session_obj_id = ObjectId(session_id)
+                filtered_by_id = base_query.filter(parsing_session=session_obj_id).count()
+                print(f"[get_questions_by_type] Questions filtered by ObjectId: {filtered_by_id}")
+                
                 filtered_questions = base_query.filter(
-                    parsing_session=parsing_session).order_by('-created_at')
+                    parsing_session=parsing_session).order_by('-updated_at','-created_at')
+                total_after_filter = filtered_questions.count()
+                print(f"[get_questions_by_type] Questions after session filter (by object): {total_after_filter}")
+                
+                # If filtering by object doesn't work, try by ObjectId
+                if total_after_filter == 0 and total_before_filter > 0:
+                    print(f"[get_questions_by_type] WARNING: Filtering by object returned 0, trying by ObjectId directly...")
+                    filtered_questions = base_query.filter(
+                        parsing_session=session_obj_id).order_by('-updated_at','-created_at')
+                    total_after_filter = filtered_questions.count()
+                    print(f"[get_questions_by_type] Questions after session filter (by ObjectId): {total_after_filter}")
             except ParsingSession.DoesNotExist:
                 # Session doesn't exist, return empty list
                 filtered_questions = base_query.none()
         else:
-            # No session_id provided - return empty list for input and generated (new session)
-            # But still return manual_review questions (they're global)
+            # No session_id provided - return empty list for all types (session-specific)
             if question_type == 'manual_review':
-                filtered_questions = base_query.order_by('-created_at')
+                # Manual review is session-specific - need session_id to show questions
+                filtered_questions = base_query.none()
+                print(f"[get_questions_by_type] No session_id provided - returning empty list for manual_review (session-specific)")
             else:
                 filtered_questions = base_query.none()
                 print(
                     f"[get_questions_by_type] No session_id provided - returning empty list for {question_type} (new session)")
 
         total_count = filtered_questions.count()
-        print(
-            f"[get_questions_by_type] Found {total_count} CraftsmanQuestions with status='{question_type}'")
+        # Log the actual query being used for better debugging
+        if question_type == 'generated' or question_type == 'manual_review':
+            print(f"[get_questions_by_type] Found {total_count} CraftsmanQuestions with status in ['generated', 'manual_review']")
+        else:
+            print(f"[get_questions_by_type] Found {total_count} CraftsmanQuestions with status='{question_type}'")
 
         # Convert to list for serialization
         questions_list = list(filtered_questions)
+        # ✅ Input tab = parsing only, always OK, no status logic
+        if question_type == 'input':
+            for q in questions_list:
+                q.parsing_flag = 'ok'     # always OK
+                q.status = None           # remove status from API response
+
+
 
         # Serialize questions
         serializer = QuestionSerializer(questions_list, many=True)
         print(
             f"[get_questions_by_type] Serialized {len(serializer.data)} questions")
-
+    
         return Response({
             "success": True,
             "questions": serializer.data
@@ -1843,11 +1971,6 @@ def parse_document(request):
         # Get model parameters
         temperature = getattr(settings_obj, 'temperature', 0)
         top_p = getattr(settings_obj, 'top_p', 1.0)
-        # Use higher default (8000) to prevent MAX_TOKENS errors
-        max_output_tokens = getattr(settings_obj, 'max_output_tokens', 8000)
-        # Ensure minimum of 4000 to avoid truncation issues
-        if max_output_tokens < 4000:
-            max_output_tokens = 8000
 
         # Get prompts
         saved_prompts = getattr(settings_obj, 'prompts', {}) or {}
@@ -1943,11 +2066,18 @@ def parse_document(request):
         file_content = file.read()
         file_ext = file.name.split('.')[-1].lower()
 
-        # Prepare prompt
-        full_prompt = parsing_prompt if parsing_prompt else "Extract all multiple choice questions from this document. For each question, provide: question text, options (A, B, C, D, etc.) with explanations for EACH option explaining why it is correct or incorrect, correct answer(s), and overall explanation if available."
+        # Prepare prompt - use only dynamic prompt from configuration
+        # Check if prompt is provided - if not, return error (no parse, no questions in tabs)
+        if not parsing_prompt or not parsing_prompt.strip():
+            return JsonResponse({
+                "success": False,
+                "error": "Please provide the prompt."
+            }, status=400)
+        
+        # Use user's prompt exactly as provided
+        full_prompt = parsing_prompt
         if parsing_instructions:
             full_prompt += f"\n\nAdditional instructions: {parsing_instructions}"
-        full_prompt += "\n\nIMPORTANT: Each option MUST include an 'explanation' field that explains why that option is correct or incorrect based on the question context.\n\nReturn the questions in JSON format: [{\"question_text\": \"...\", \"options\": [{\"text\": \"...\", \"explanation\": \"...\"}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\"}]"
 
         # Use Gemini to parse document - try multiple model name formats
         model = None
@@ -2048,8 +2178,7 @@ def parse_document(request):
         # Prepare generation config for Gemini
         generation_config = {
             'temperature': temperature,
-            'top_p': top_p,
-            'max_output_tokens': max_output_tokens
+            'top_p': top_p
         }
 
         try:
@@ -2342,8 +2471,7 @@ def parse_document(request):
                     }, status=400)
                 elif finish_reason == 2:
                     # For MAX_TOKENS, provide a helpful but non-blocking message
-                    # The higher default (8000) should prevent this in most cases
-                    print(f"[parse_document] MAX_TOKENS: Empty response. This is rare with default max_output_tokens=8000.")
+                    print(f"[parse_document] MAX_TOKENS: Empty response. The document may be too large.")
                     return JsonResponse({
                         "success": False,
                         "error": "The document is too large to process. Please try with a smaller document or split it into multiple parts."
@@ -2387,18 +2515,65 @@ def parse_document(request):
             if finish_reason == 2 and len(cleaned_text) < 100:
                 return JsonResponse({
                     "success": False,
-                    "error": "Response was truncated due to token limit and the content is too incomplete to parse. Please increase max_output_tokens in settings or try with a smaller document."
+                    "error": "Response was truncated and the content is too incomplete to parse. The document may be too large. Please try with a smaller document or split it into multiple parts."
                 }, status=400)
             
             # Try to find JSON array in the cleaned text
-            # First, try to find a complete JSON array
-            json_match = re.search(r'\[.*\]', cleaned_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group()
-                print(
-                    f"[parse_document] Found JSON array, length: {len(json_str)}")
+            # First, try to find a complete JSON array by matching brackets
+            json_str = None
+            
+            # Try to find the outermost array brackets
+            bracket_start = cleaned_text.find('[')
+            if bracket_start != -1:
+                # Find matching closing bracket
+                bracket_count = 0
+                bracket_end = -1
+                for i in range(bracket_start, len(cleaned_text)):
+                    if cleaned_text[i] == '[':
+                        bracket_count += 1
+                    elif cleaned_text[i] == ']':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            bracket_end = i
+                            break
+                
+                if bracket_end != -1:
+                    json_str = cleaned_text[bracket_start:bracket_end + 1]
+                    print(f"[parse_document] Found JSON array from position {bracket_start} to {bracket_end}, length: {len(json_str)}")
+            
+            # Fallback to regex if bracket matching didn't work
+            if not json_str:
+                json_match = re.search(r'\[.*?\]', cleaned_text, re.DOTALL)
+                if json_match:
+                    # Try to find the complete array by matching brackets
+                    json_str = json_match.group()
+                    # Check if it's a complete array by counting brackets
+                    if json_str.count('[') == json_str.count(']'):
+                        print(f"[parse_document] Found JSON array via regex, length: {len(json_str)}")
+                    else:
+                        # Try to find the complete array manually
+                        bracket_start = cleaned_text.find('[')
+                        if bracket_start != -1:
+                            bracket_count = 0
+                            bracket_end = -1
+                            for i in range(bracket_start, len(cleaned_text)):
+                                if cleaned_text[i] == '[':
+                                    bracket_count += 1
+                                elif cleaned_text[i] == ']':
+                                    bracket_count -= 1
+                                    if bracket_count == 0:
+                                        bracket_end = i
+                                        break
+                            if bracket_end != -1:
+                                json_str = cleaned_text[bracket_start:bracket_end + 1]
+                                print(f"[parse_document] Found complete JSON array manually, length: {len(json_str)}")
+            
+            if json_str:
+                print(f"[parse_document] Extracted JSON array, length: {len(json_str)}")
+                print(f"[parse_document] JSON preview (first 500 chars): {json_str[:500]}")
                 try:
                     questions_data = json.loads(json_str)
+                    print(f"[parse_document] Successfully parsed JSON array with {len(questions_data) if isinstance(questions_data, list) else 1} question(s)")
                 except json.JSONDecodeError as json_err:
                     # If the JSON is incomplete, try to fix common issues
                     print(f"[parse_document] JSON parse error, attempting to fix: {json_err}")
@@ -2507,13 +2682,13 @@ def parse_document(request):
                                     except json.JSONDecodeError:
                                         # If MAX_TOKENS and we can't parse, return helpful error
                                         raise json.JSONDecodeError(
-                                            "Response was truncated due to token limit and JSON is too incomplete to parse. Please increase max_output_tokens in settings.",
+                                            "Response was truncated and JSON is too incomplete to parse. The document may be too large. Please try with a smaller document or split it into multiple parts.",
                                             json_str, len(json_str)
                                         )
                                 else:
                                     # If MAX_TOKENS and we can't extract valid JSON, return helpful error
                                     raise json.JSONDecodeError(
-                                        "Response was truncated due to token limit and JSON is too incomplete to parse. Please increase max_output_tokens in settings.",
+                                        "Response was truncated and JSON is too incomplete to parse. The document may be too large. Please try with a smaller document or split it into multiple parts.",
                                         json_str, len(json_str)
                                     )
                             else:
@@ -2558,20 +2733,96 @@ def parse_document(request):
                 print(f"[parse_document] Trying to parse entire cleaned response as JSON")
                 try:
                     questions_data = json.loads(cleaned_text)
+                    # Ensure it's a list
+                    if not isinstance(questions_data, list):
+                        print(f"[parse_document] WARNING: Response is not an array, converting single object to list")
+                        questions_data = [questions_data]
                 except json.JSONDecodeError:
-                    # If that fails, try to extract JSON object instead of array
-                    obj_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
-                    if obj_match:
-                        json_str = obj_match.group()
-                        questions_data = json.loads(json_str)
-                        # Convert single object to list
-                        if not isinstance(questions_data, list):
-                            questions_data = [questions_data]
+                    # If that fails, try to find multiple JSON objects (not just one)
+                    # Look for all JSON objects in the response by finding balanced braces
+                    print(f"[parse_document] Attempting to extract multiple JSON objects from response...")
+                    questions_data = []
+                    i = 0
+                    objects_found = 0
+                    while i < len(cleaned_text):
+                        # Find the start of a JSON object
+                        obj_start = cleaned_text.find('{', i)
+                        if obj_start == -1:
+                            break
+                        
+                        # Find the matching closing brace
+                        brace_count = 0
+                        in_string = False
+                        escape_next = False
+                        obj_end = -1
+                        
+                        for j in range(obj_start, len(cleaned_text)):
+                            if escape_next:
+                                escape_next = False
+                                continue
+                            if cleaned_text[j] == '\\':
+                                escape_next = True
+                                continue
+                            if cleaned_text[j] == '"' and not escape_next:
+                                in_string = not in_string
+                                continue
+                            if not in_string:
+                                if cleaned_text[j] == '{':
+                                    brace_count += 1
+                                elif cleaned_text[j] == '}':
+                                    brace_count -= 1
+                                    if brace_count == 0:
+                                        obj_end = j
+                                        break
+                        
+                        if obj_end != -1:
+                            obj_str = cleaned_text[obj_start:obj_end + 1]
+                            try:
+                                obj_data = json.loads(obj_str)
+                                # Verify it looks like a question object
+                                if isinstance(obj_data, dict) and ('question_text' in obj_data or 'question' in obj_data):
+                                    questions_data.append(obj_data)
+                                    objects_found += 1
+                                    print(f"[parse_document] Extracted question object {objects_found} at position {obj_start}-{obj_end}")
+                                i = obj_end + 1
+                            except json.JSONDecodeError:
+                                i = obj_start + 1
+                        else:
+                            i = obj_start + 1
+                    
+                    if questions_data:
+                        print(f"[parse_document] Successfully parsed {len(questions_data)} question objects from multiple JSON objects")
                     else:
-                        raise
+                        # Last resort: try to extract a single JSON object
+                        print(f"[parse_document] No question objects found, trying single object extraction...")
+                        obj_match = re.search(r'\{.*?\}', cleaned_text, re.DOTALL)
+                        if obj_match:
+                            json_str = obj_match.group()
+                            try:
+                                questions_data = json.loads(json_str)
+                                # Convert single object to list
+                                if not isinstance(questions_data, list):
+                                    questions_data = [questions_data]
+                                print(f"[parse_document] WARNING: Only found single JSON object, converted to list")
+                            except json.JSONDecodeError:
+                                raise
+                        else:
+                            raise
 
+            parsed_count = len(questions_data) if isinstance(questions_data, list) else 1
             print(
-                f"[parse_document] Successfully parsed {len(questions_data) if isinstance(questions_data, list) else 1} question(s)")
+                f"[parse_document] Successfully parsed {parsed_count} question(s) from AI response")
+            
+            # Verify we got all questions - log the count
+            if isinstance(questions_data, list):
+                print(f"[parse_document] Extracted questions array has {len(questions_data)} items")
+                # Log first and last question to verify range
+                if len(questions_data) > 0:
+                    print(f"[parse_document] First question preview: {str(questions_data[0].get('question_text', '')[:100]) if isinstance(questions_data[0], dict) else 'N/A'}")
+                    if len(questions_data) > 1:
+                        print(f"[parse_document] Last question preview: {str(questions_data[-1].get('question_text', '')[:100]) if isinstance(questions_data[-1], dict) else 'N/A'}")
+            else:
+                print(f"[parse_document] WARNING: questions_data is not a list, it's a {type(questions_data)}")
         except json.JSONDecodeError as e:
             print(f"[parse_document] JSON decode error: {str(e)}")
             print(f"[parse_document] Full response: {response_text}")
@@ -2579,16 +2830,10 @@ def parse_document(request):
             # Check if error is related to MAX_TOKENS truncation
             if finish_reason == 2:
                 error_msg = str(e)
-                if "truncated due to token limit" in error_msg or "too incomplete to parse" in error_msg:
-                    return JsonResponse({
-                        "success": False,
-                        "error": "Response was truncated due to token limit and the JSON is too incomplete to parse. Please increase max_output_tokens in settings (recommended: 4000-8000) or try with a smaller document."
-                    }, status=400)
-                else:
-                    return JsonResponse({
-                        "success": False,
-                        "error": f"Response was truncated due to token limit and could not be parsed as JSON: {str(e)}. Please increase max_output_tokens in settings or try with a smaller document."
-                    }, status=400)
+                return JsonResponse({
+                    "success": False,
+                    "error": f"Response was truncated and could not be parsed as JSON: {str(e)}. The document may be too large. Please try with a smaller document or split it into multiple parts."
+                }, status=400)
             else:
                 return JsonResponse({"success": False, "error": f"Failed to parse AI response as JSON: {str(e)}. Response preview: {response_text[:500]}"}, status=500)
         except Exception as e:
@@ -2601,7 +2846,10 @@ def parse_document(request):
         if not isinstance(questions_data, list):
             questions_data = [questions_data]
 
-        print(f"[parse_document] Processing {len(questions_data)} questions")
+        total_questions_to_process = len(questions_data)
+        print(f"[parse_document] ===== FINAL QUESTION COUNT =====")
+        print(f"[parse_document] Total questions extracted from document: {total_questions_to_process}")
+        print(f"[parse_document] Processing {total_questions_to_process} questions for saving")
 
         # Limit questions in test mode
         if test_mode and limit:
@@ -2643,6 +2891,8 @@ def parse_document(request):
         print(f"[parse_document] Default course ID: {default_course.id}")
         print(
             f"[parse_document] Default course name: {getattr(default_course, 'name', 'Unnamed')}")
+        print(f"[parse_document] Session ID: {parsing_session.id}")
+        print(f"[parse_document] Session name: {parsing_session.session_name}")
 
         for idx, q_data in enumerate(questions_data):
             try:
@@ -2693,10 +2943,13 @@ def parse_document(request):
 
                 correct_answers = q_data.get('correct_answers', [])
                 if not correct_answers:
-                    error_msg = f"Question {idx + 1}: Missing correct answers"
-                    errors.append(error_msg)
-                    print(f"[parse_document] {error_msg}")
-                    continue
+
+                    logger.warning(f"Question {idx}: No correct answers provided — saving as input")
+
+                    correct_answers = []
+                    status = "input"   # or "draft" / "needs_review"
+                else:
+                    status = "ready"
 
                 if not isinstance(correct_answers, list):
                     correct_answers = [correct_answers]
@@ -2706,10 +2959,14 @@ def parse_document(request):
                                    for ca in correct_answers if str(ca).strip()]
 
                 if not correct_answers:
-                    error_msg = f"Question {idx + 1}: No valid correct answers after normalization"
-                    errors.append(error_msg)
-                    print(f"[parse_document] {error_msg}")
-                    continue
+                    logger.warning(
+                        f"Question {idx}: No valid correct answers after normalization — saving as input"
+                    )
+
+                    normalized_correct_answers = []
+                    status = "input"
+                else:
+                    status = "ready"
 
                 # Validate and match correct answers to option texts
                 # Try to match correct answers to option texts (case-insensitive)
@@ -2834,8 +3091,8 @@ def parse_document(request):
                         question_text=question_text,
                         question_type=question_type,
                         options=normalized_options,
-                        correct_answers=validated_correct_answers,
-                        explanation=q_data.get('explanation', '') or '',
+                        # correct_answers=validated_correct_answers,
+                        # explanation=q_data.get('explanation', '') or '',
                         tags=tags,
                         status='input'  # Mark as input question
                     )
@@ -2892,11 +3149,32 @@ def parse_document(request):
                 print(traceback.format_exc())
 
         # Update parsing session with statistics
+        session_obj_id = ObjectId(str(parsing_session.id))
         session_questions = CraftsmanQuestion.objects(
-            parsing_session=parsing_session)
+            parsing_session=session_obj_id)
         input_count = session_questions.filter(status='input').count()
-        generated_count = session_questions.filter(status='generated').count()
+        # Count all generated questions (both validated and not validated)
+        generated_count = session_questions.filter(status__in=['generated', 'manual_review']).count()
         total_count = session_questions.count()
+        
+        print(f"\n[parse_document] ===== SESSION STATISTICS =====")
+        print(f"[parse_document] Session ID: {parsing_session.id}")
+        print(f"[parse_document] Session name: {parsing_session.session_name}")
+        print(f"[parse_document] Questions processed: {len(questions_data)}")
+        print(f"[parse_document] Questions successfully saved: {saved_count}")
+        print(f"[parse_document] Questions with errors: {len(errors)}")
+        print(f"[parse_document] Total questions in session (input): {input_count}")
+        print(f"[parse_document] Total questions in session (generated): {generated_count}")
+        print(f"[parse_document] Total questions in session (all): {total_count}")
+        
+        if saved_count < len(questions_data):
+            print(f"[parse_document] ⚠️ WARNING: Only saved {saved_count} out of {len(questions_data)} questions!")
+            if errors:
+                print(f"[parse_document] Errors encountered:")
+                for error in errors[:10]:  # Show first 10 errors
+                    print(f"[parse_document]   - {error}")
+        else:
+            print(f"[parse_document] ✅ SUCCESS: All {saved_count} questions saved successfully!")
 
         parsing_session.total_questions = total_count
         parsing_session.input_questions_count = input_count
@@ -2971,13 +3249,32 @@ def parse_document(request):
         return JsonResponse({
             "success": saved_count > 0,
             "message": message,
+
+            # Counts
             "parsed_count": len(questions_data),
             "saved_count": saved_count,
-            "errors": errors,
             "database_count": CraftsmanQuestion.objects(course=default_course).count() if default_course else 0,
-            # Return session ID for frontend
-            "session_id": str(parsing_session.id)
+
+            # Errors
+            "errors": errors,
+
+            # Session
+            "session_id": str(parsing_session.id),
+
+            # 🔹 NEW: columns shown in Input Questions tab
+            "input_columns": [
+                "id",
+                "question_text",
+                "option_a",
+                "option_b",
+                "option_c",
+                "option_d",
+                "parsing_flag",
+                "status"
+            ],
+            "questions": questions_data
         })
+
     except Exception as e:
         import traceback
         error_msg = str(e)
@@ -2996,7 +3293,6 @@ def generate_from_input(request):
     try:
         from settings_app.models import AdminSettings
         import os
-
         # Get configuration
         settings_obj = AdminSettings.objects.first()
         if not settings_obj:
@@ -3006,6 +3302,17 @@ def generate_from_input(request):
         saved_prompts = getattr(settings_obj, 'prompts', {}) or {}
         prompt2 = saved_prompts.get('prompt2', {})
         generation_prompt = prompt2.get('prompt', '') if prompt2 else ''
+        # 🔥 ADD THESE DEBUG LINES
+        print("PROMPTS FROM DB:", saved_prompts)
+        print("PROMPT2 OBJECT:", prompt2)
+        print("GENERATION PROMPT:", generation_prompt)
+
+        # If no generation prompt, do not process — show message and no questions in tabs
+        if not generation_prompt or not generation_prompt.strip():
+            return JsonResponse({
+                "success": False,
+                "error": "Please provide the prompt."
+            }, status=400)
 
         # Get parameters
         data = request.data
@@ -3085,8 +3392,10 @@ def generate_from_input(request):
                         id=ObjectId(session_id))
                     questions = CraftsmanQuestion.objects(
                         status='input', parsing_session=parsing_session).order_by('-created_at')
+                    questions_count = questions.count()
                     print(
                         f"[generate_from_input] Filtering input questions by session_id: {session_id}")
+                    print(f"[generate_from_input] Found {questions_count} input questions in session {session_id} ({parsing_session.session_name})")
                 except ParsingSession.DoesNotExist:
                     return JsonResponse({"success": False, "error": "Session not found"}, status=400)
             else:
@@ -3104,42 +3413,55 @@ def generate_from_input(request):
             return JsonResponse({"success": False, "error": "No course found. Please create a course first."}, status=400)
 
         # Find the parsing session from input questions (if they have one)
-        # If session_id is provided, use that session; otherwise use the session from input questions
+        # IMPORTANT: Always use the same session as input questions to ensure generated questions
+        # are visible in the same session context
+        # CRITICAL: Use the session_id from the request, which should be the parsing session
         if session_id and ObjectId.is_valid(session_id):
             try:
                 generation_session = ParsingSession.objects.get(
                     id=ObjectId(session_id))
                 print(
-                    f"[generate_from_input] Using provided session: {generation_session.id} - {generation_session.session_name}")
+                    f"[generate_from_input] Using provided session_id: {session_id}")
+                print(
+                    f"[generate_from_input] Generation session: {generation_session.id} - {generation_session.session_name}")
+                
+                # Verify that input questions belong to this session
+                questions_list = list(questions) if hasattr(questions, '__iter__') and not isinstance(questions, list) else questions
+                if questions_list:
+                    first_question_session = questions_list[0].parsing_session
+                    if first_question_session and str(first_question_session.id) != str(session_id):
+                        print(f"[generate_from_input] WARNING: Input questions belong to different session ({first_question_session.id}) than provided session_id ({session_id})")
+                        print(f"[generate_from_input] Using the session from input questions instead: {first_question_session.id}")
+                        generation_session = first_question_session
+                    else:
+                        print(f"[generate_from_input] Verified: Input questions belong to the same session ({session_id})")
             except ParsingSession.DoesNotExist:
                 return JsonResponse({"success": False, "error": "Session not found"}, status=400)
         else:
-            # Use the session from the first input question, or create a new one if none exist
+            # Use the session from the input questions - ensure all generated questions use the same session
+            questions_list = list(questions) if hasattr(questions, '__iter__') and not isinstance(questions, list) else questions
             input_question_sessions = set()
-            for q in questions:
+            for q in questions_list:
                 if q.parsing_session:
                     input_question_sessions.add(q.parsing_session)
 
             # If all input questions belong to the same session, use that session
-            # Otherwise, create a new generation session
+            # This ensures generated questions are in the same session as input questions
             if len(input_question_sessions) == 1:
                 generation_session = list(input_question_sessions)[0]
                 print(
-                    f"[generate_from_input] Using existing parsing session: {generation_session.id} - {generation_session.session_name}")
-            else:
-                # Create a new generation session to track this operation
-                session_name = f"Generate - {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
-                generation_session = ParsingSession(
-                    session_name=session_name,
-                    session_type='generate',
-                    course=default_course,
-                    model_used=getattr(
-                        settings_obj, 'model_selector', 'gpt-4') or 'gpt-4',
-                    status='in_progress'
-                )
-                generation_session.save()
+                    f"[generate_from_input] Using existing parsing session from input questions: {generation_session.id} - {generation_session.session_name}")
+            elif len(input_question_sessions) > 1:
+                # Multiple sessions - use the first one (shouldn't happen, but handle it)
+                generation_session = list(input_question_sessions)[0]
                 print(
-                    f"[generate_from_input] Created new generation session: {generation_session.id} - {session_name}")
+                    f"[generate_from_input] Multiple sessions found, using first: {generation_session.id} - {generation_session.session_name}")
+            else:
+                # No session found - this shouldn't happen if questions were parsed correctly
+                return JsonResponse({"success": False, "error": "Input questions have no session. Please parse a document first."}, status=400)
+        
+        # Final verification: Log the session that will be used for generated questions
+        print(f"[generate_from_input] FINAL: Generated questions will be linked to session: {generation_session.id} ({generation_session.session_name})")
 
         # Get configuration
         max_retries = getattr(settings_obj, 'max_retry_count', 3)
@@ -3153,15 +3475,20 @@ def generate_from_input(request):
 
         saved_count = 0
         errors = []
+        
+        # Convert to list if it's a queryset to ensure we can iterate properly
+        questions_list = list(questions) if hasattr(questions, '__iter__') and not isinstance(questions, list) else questions
+        total_input_questions = len(questions_list)
+        print(f"[generate_from_input] Starting generation for {total_input_questions} input question(s)")
 
         # Generate questions from each input question
-        for source_question in questions:
+        for idx, source_question in enumerate(questions_list, 1):
+            print(f"[generate_from_input] ========================================")
+            print(f"[generate_from_input] Processing input question {idx}/{total_input_questions} (ID: {source_question.id})")
+            print(f"[generate_from_input] Source question text: {source_question.question_text[:100]}...")
             for _ in range(num_questions_per_source):
                 try:
-                    # Prepare prompt
-                    if not generation_prompt:
-                        generation_prompt = "Generate a new multiple choice question similar to the given question but with different wording, options, and correct answer. Maintain the same difficulty level and topic. IMPORTANT: Each option MUST include an 'explanation' field that explains why that option is correct or incorrect."
-
+                    # Prepare prompt - use user's prompt exactly as provided
                     # Format source question options with explanations if available
                     source_options_str = []
                     for opt in source_question.options:
@@ -3179,16 +3506,24 @@ def generate_from_input(request):
                         source_tags = [t.strip() for t in source_tags.split(',') if t.strip()]
                     source_tags_str = ', '.join(source_tags) if source_tags else 'N/A'
 
-                    full_prompt = f"{generation_prompt}\n\nSource question:\nQuestion: {source_question.question_text}\nOptions: {source_options_str}\nCorrect Answer: {source_question.correct_answers}\nExplanation: {source_question.explanation or 'N/A'}\nDomain/Tags: {source_tags_str}\n\nGenerate a new question in JSON format: {{\"question_text\": \"...\", \"options\": [{{\"text\": \"...\", \"explanation\": \"...\"}}], \"correct_answers\": [\"...\"], \"explanation\": \"...\", \"question_type\": \"single\" or \"multiple\", \"tags\": [\"...\"]}}\n\nIMPORTANT: \n1. Each option in the options array must include both 'text' and 'explanation' fields.\n2. Include a 'tags' field (array of strings) that represents the domain/topic of the question. Use the same or similar domain as the source question if applicable."
+                    # Use user's prompt exactly as provided, with source question context
+                    # Check if prompt is provided - if not, skip this question
+                    if not generation_prompt or not generation_prompt.strip():
+                        errors.append(f"Input question {idx}: No generation prompt configured. Please configure Prompt 2 in Admin Settings.")
+                        print(f"[generate_from_input] Skipping question {idx} - no generation prompt configured")
+                        continue
+                    
+                    # Build full prompt using only the dynamic prompt from configuration
+                    full_prompt = f"{generation_prompt}\n\nSource question:\nQuestion: {source_question.question_text}\nOptions: {source_options_str}\nCorrect Answer: {source_question.correct_answers}\nExplanation: {source_question.explanation or 'N/A'}\nDomain/Tags: {source_tags_str}"
 
-                    # Call OpenAI
+                    # Call OpenAI - use only dynamic prompt, no hardcoded system message
+                    response_text = None
                     try:
                         # Try new OpenAI API format (v1.0+)
                         client = openai.OpenAI(api_key=openai_api_key)
                         response = client.chat.completions.create(
                             model=model_name,
                             messages=[
-                                {"role": "system", "content": "You are a question generator. Generate new questions in JSON format."},
                                 {"role": "user", "content": full_prompt}
                             ],
                             temperature=temperature,
@@ -3197,63 +3532,378 @@ def generate_from_input(request):
                             presence_penalty=presence_penalty,
                             max_tokens=max_output_tokens
                         )
-                        response_text = response.choices[0].message.content.strip(
-                        )
+                        # Check if response has content
+                        if response and response.choices and len(response.choices) > 0:
+                            message = response.choices[0].message
+                            if message and message.content:
+                                response_text = message.content.strip()
                     except AttributeError:
                         # Fallback to old API format
-                        openai.api_key = openai_api_key
-                        response = openai.ChatCompletion.create(
-                            model=model_name,
-                            messages=[
-                                {"role": "system", "content": "You are a question generator. Generate new questions in JSON format."},
-                                {"role": "user", "content": full_prompt}
-                            ],
-                            temperature=temperature,
-                            top_p=top_p,
-                            frequency_penalty=frequency_penalty,
-                            presence_penalty=presence_penalty,
-                            max_tokens=max_output_tokens
-                        )
-                        response_text = response.choices[0].message.content.strip(
-                        )
+                        try:
+                            openai.api_key = openai_api_key
+                            response = openai.ChatCompletion.create(
+                                model=model_name,
+                                messages=[
+                                    {"role": "user", "content": full_prompt}
+                                ],
+                                temperature=temperature,
+                                top_p=top_p,
+                                frequency_penalty=frequency_penalty,
+                                presence_penalty=presence_penalty,
+                                max_tokens=max_output_tokens
+                            )
+                            # Check if response has content
+                            if response and response.choices and len(response.choices) > 0:
+                                message = response.choices[0].message
+                                if message and message.content:
+                                    response_text = message.content.strip()
+                        except Exception as fallback_error:
+                            error_msg = f"OpenAI API error (fallback): {str(fallback_error)}"
+                            errors.append(error_msg)
+                            print(f"[generate_from_input] {error_msg}")
+                            continue
+                    except Exception as openai_error:
+                        error_msg = f"OpenAI API error: {str(openai_error)}"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] {error_msg}")
+                        continue
 
-                    # Extract JSON
+                    # Check if response_text is empty or None
+                    if not response_text:
+                        error_msg = f"Empty response from OpenAI API for input question {idx}"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] {error_msg}")
+                        print(f"[generate_from_input] Response object: {response}")
+                        continue
+
+                    # Extract JSON with multiple strategies
                     import re
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        q_data = json.loads(json_match.group())
-                    else:
-                        q_data = json.loads(response_text)
+                    q_data = None
+                    
+                    # Strategy 1: Try to extract from markdown code blocks
+                    code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL | re.IGNORECASE)
+                    if code_block_match:
+                        try:
+                            q_data = json.loads(code_block_match.group(1))
+                            print(f"[generate_from_input] ✅ Extracted JSON from code block")
+                        except:
+                            pass
+                    
+                    # Strategy 2: Try to find JSON object with balanced braces
+                    if not q_data:
+                        brace_count = 0
+                        start_idx = -1
+                        for i, char in enumerate(response_text):
+                            if char == '{':
+                                if brace_count == 0:
+                                    start_idx = i
+                                brace_count += 1
+                            elif char == '}':
+                                brace_count -= 1
+                                if brace_count == 0 and start_idx != -1:
+                                    json_str = response_text[start_idx:i+1]
+                                    try:
+                                        q_data = json.loads(json_str)
+                                        print(f"[generate_from_input] ✅ Extracted JSON using balanced braces")
+                                        break
+                                    except:
+                                        # Try fixing trailing commas
+                                        try:
+                                            fixed = re.sub(r',\s*}', '}', json_str)
+                                            fixed = re.sub(r',\s*]', ']', fixed)
+                                            q_data = json.loads(fixed)
+                                            print(f"[generate_from_input] ✅ Extracted JSON after fixing trailing commas")
+                                            break
+                                        except:
+                                            continue
+                    
+                    # Strategy 3: Try regex match (non-greedy)
+                    if not q_data:
+                        json_match = re.search(r'\{.*?\}', response_text, re.DOTALL)
+                        if json_match:
+                            try:
+                                q_data = json.loads(json_match.group())
+                                print(f"[generate_from_input] ✅ Extracted JSON using regex")
+                            except:
+                                pass
+                    
+                    # Strategy 4: Try parsing entire response
+                    if not q_data:
+                        try:
+                            q_data = json.loads(response_text.strip())
+                            print(f"[generate_from_input] ✅ Parsed entire response as JSON")
+                        except:
+                            pass
+                    
+                    # If still no data, log and continue
+                    if not q_data:
+                        error_msg = f"Could not extract valid JSON from OpenAI response for input question {idx}"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] ❌ {error_msg}")
+                        print(f"[generate_from_input] Response text (first 1000 chars): {response_text[:1000]}")
+                        continue
+                    
+                    print(f"[generate_from_input] ✅ Successfully extracted JSON data")
+                    print(f"[generate_from_input] Extracted JSON keys: {list(q_data.keys()) if isinstance(q_data, dict) else 'Not a dict'}")
+                    # Debug: Print full q_data structure (first 2000 chars) to see what AI returned
+                    q_data_str = json.dumps(q_data, indent=2, default=str)
+                    print(f"[generate_from_input] Full q_data structure (first 2000 chars):\n{q_data_str[:2000]}")
 
                     # Validate and save question
-                    question_text = q_data.get('question_text', '').strip()
+                    # Try multiple possible field names for question text
+                    question_text = (q_data.get('question_text') or 
+                                   q_data.get('question') or 
+                                   q_data.get('text') or 
+                                   q_data.get('prompt') or q_data.get('Question') or '').strip()
+                    
                     if not question_text:
-                        errors.append(
-                            f"Generated question: Missing question text")
+                        error_msg = f"Generated question {idx}: Missing question text"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] ❌ {error_msg}")
+                        print(f"[generate_from_input] Available keys in JSON: {list(q_data.keys()) if isinstance(q_data, dict) else 'N/A'}")
                         continue
 
-                    options = q_data.get('options', [])
-                    if not options:
-                        errors.append(f"Generated question: Missing options")
+                    # Try multiple possible field names for options
+                    options = (q_data.get('options') or 
+                              q_data.get('choices') or 
+                              q_data.get('option_list') or 
+                              q_data.get('answers') or 
+                              q_data.get('alternatives') or q_data.get('Options') or [])
+                    
+                    # If options is not a list, try to convert it
+                    if options and not isinstance(options, list):
+                        if isinstance(options, dict):
+                            # If it's a dict, try to extract values
+                            options = list(options.values()) if options else []
+                        elif isinstance(options, str):
+                            # If it's a string, try to split it
+                            options = [opt.strip() for opt in options.split(',') if opt.strip()]
+                        else:
+                            options = [options]
+                    
+                    # Check for option_a, option_b, option_c format (with per-option explanation)
+                    if not options or len(options) == 0:
+                        extracted_options = []
+                        option_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+                        for letter in option_letters:
+                            option_key = f'option_{letter}'
+                            explanation_key = f'option_{letter}_explanation'
+                            explanation_key_alt = f'option_{letter}_Explaination'
+                            if option_key in q_data:
+                                opt_text = str(q_data[option_key]).strip()
+                                if opt_text:
+                                    opt_dict = {"text": opt_text}
+                                    exp_val = q_data.get(explanation_key) or q_data.get(explanation_key_alt)
+                                    opt_dict['explanation'] = str(exp_val).strip() if exp_val else ''
+                                    extracted_options.append(opt_dict)
+                        if extracted_options:
+                            options = extracted_options
+                            print(f"[generate_from_input] ✅ Extracted {len(options)} options with per-option explanations from option_a/option_b format")
+                    
+                    # If still no options, try numbered format (option_1, option_2, etc.)
+                    if not options or len(options) == 0:
+                        extracted_options = []
+                        for num in range(1, 10):
+                            option_key = f'option_{num}'
+                            explanation_key = f'option_{num}_explanation'
+                            explanation_key_alt = f'option_{num}_Explaination'
+                            if option_key in q_data:
+                                opt_text = str(q_data[option_key]).strip()
+                                if opt_text:
+                                    opt_dict = {"text": opt_text}
+                                    exp_val = q_data.get(explanation_key) or q_data.get(explanation_key_alt)
+                                    opt_dict['explanation'] = str(exp_val).strip() if exp_val else ''
+                                    extracted_options.append(opt_dict)
+                            else:
+                                break
+                        if extracted_options:
+                            options = extracted_options
+                            print(f"[generate_from_input] ✅ Extracted {len(options)} options from option_1/option_2 format")
+                    
+                    if not options or len(options) == 0:
+                        error_msg = f"Generated question {idx}: Missing options"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] ❌ {error_msg}")
+                        print(f"[generate_from_input] Available keys in JSON: {list(q_data.keys()) if isinstance(q_data, dict) else 'N/A'}")
+                        print(f"[generate_from_input] Full JSON data: {json.dumps(q_data, indent=2)[:1000]}")
                         continue
+                    
+                    print(f"[generate_from_input] ✅ Question text extracted: {question_text[:50]}...")
+                    print(f"[generate_from_input] ✅ Options count: {len(options)}")
+                    print(f"[generate_from_input] Options data: {options}")
+                    # Debug: Check for explanation keys in q_data
+                    explanation_keys = [k for k in q_data.keys() if 'explanation' in k.lower() or 'Explaination' in k]
+                    if explanation_keys:
+                        print(f"[generate_from_input] Found explanation keys in q_data: {explanation_keys}")
+                    else:
+                        print(f"[generate_from_input] ⚠️ No explanation keys found in q_data. Available keys: {list(q_data.keys())[:20]}")
 
                     normalized_options = []
                     for opt in options:
                         if isinstance(opt, dict):
-                            # Preserve explanation if it exists
-                            opt_dict = {"text": opt.get('text', '').strip()}
-                            if 'explanation' in opt and opt.get('explanation'):
-                                opt_dict['explanation'] = str(
-                                    opt.get('explanation', '')).strip()
-                            normalized_options.append(opt_dict)
+                            opt_text = (opt.get('text') or 
+                                       opt.get('option') or 
+                                       opt.get('choice') or 
+                                       opt.get('value') or 
+                                       opt.get('label') or 
+                                       str(opt.get('answer', '')) or '').strip()
+                            if opt_text:
+                                opt_dict = {"text": opt_text}
+                                # Per-option explanation (always set key so UI shows "—" when empty)
+                                exp = (opt.get('explanation') or opt.get('reason') or 
+                                       opt.get('rationale') or opt.get('Explaination') or '')
+                                opt_dict['explanation'] = str(exp).strip() if exp else ''
+                                normalized_options.append(opt_dict)
                         elif isinstance(opt, str):
-                            normalized_options.append({"text": opt.strip()})
-
-                    correct_answers = q_data.get('correct_answers', [])
-                    if not correct_answers:
-                        errors.append(
-                            f"Generated question: Missing correct answers")
+                            if opt.strip():
+                                normalized_options.append({"text": opt.strip(), "explanation": ''})
+                        elif opt is not None:
+                            opt_str = str(opt).strip()
+                            if opt_str:
+                                normalized_options.append({"text": opt_str, "explanation": ''})
+                    
+                    # Extract option explanations from "Explanation" dict (AI returns option text -> explanation mapping)
+                    explanation_dict = None
+                    if 'Explanation' in q_data and isinstance(q_data.get('Explanation'), dict):
+                        explanation_dict = q_data.get('Explanation')
+                        print(f"[generate_from_input] ✅ Found Explanation dict with {len(explanation_dict)} entries")
+                    elif 'explanation' in q_data and isinstance(q_data.get('explanation'), dict):
+                        explanation_dict = q_data.get('explanation')
+                        print(f"[generate_from_input] ✅ Found explanation dict with {len(explanation_dict)} entries")
+                    
+                    # Enrich option explanations from multiple sources
+                    # Priority: 1) Explanation dict (option text -> explanation), 2) option_X_explanation keys, 3) existing in array
+                    option_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+                    explanations_found = 0
+                    for i, opt in enumerate(normalized_options):
+                        opt_text = opt.get('text', '').strip()
+                        
+                        # Priority 1: Try to get explanation from Explanation dict (match by option text)
+                        if explanation_dict and opt_text:
+                            # Try exact match first
+                            if opt_text in explanation_dict:
+                                exp_from_dict = str(explanation_dict[opt_text]).strip()
+                                if exp_from_dict:
+                                    opt['explanation'] = exp_from_dict
+                                    explanations_found += 1
+                                    print(f"[generate_from_input] ✅ Matched explanation from Explanation dict for option {i+1}: {exp_from_dict[:50]}...")
+                            else:
+                                # Try case-insensitive match
+                                for key, value in explanation_dict.items():
+                                    if key.strip().lower() == opt_text.lower():
+                                        exp_from_dict = str(value).strip()
+                                        if exp_from_dict:
+                                            opt['explanation'] = exp_from_dict
+                                            explanations_found += 1
+                                            print(f"[generate_from_input] ✅ Matched explanation (case-insensitive) from Explanation dict for option {i+1}")
+                                            break
+                        
+                        # Priority 2: Try option_X_explanation keys (if not already set from dict)
+                        if not opt.get('explanation') or not opt.get('explanation').strip():
+                            if i < len(option_letters):
+                                letter = option_letters[i]
+                                exp_from_key = (q_data.get(f'option_{letter}_explanation') or 
+                                               q_data.get(f'option_{letter}_Explaination') or 
+                                               q_data.get(f'Option_{letter}_explanation') or 
+                                               q_data.get(f'Option_{letter}_Explanation') or '')
+                                if exp_from_key:
+                                    exp_from_key = str(exp_from_key).strip() if isinstance(exp_from_key, str) else ''
+                                    if exp_from_key:
+                                        opt['explanation'] = exp_from_key
+                                        explanations_found += 1
+                                        print(f"[generate_from_input] ✅ Found explanation for option {letter} from option_{letter}_explanation: {exp_from_key[:50]}...")
+                        
+                        # Ensure every option has explanation key
+                        if 'explanation' not in opt or not opt.get('explanation'):
+                            opt['explanation'] = ''
+                    
+                    if explanations_found > 0:
+                        print(f"[generate_from_input] ✅ Enriched {explanations_found} option explanations from Explanation dict/option_X_explanation keys")
+                    else:
+                        print(f"[generate_from_input] ⚠️ No option explanations found")
+                        # Debug: print all keys that might contain explanations
+                        all_keys = list(q_data.keys())
+                        exp_like_keys = [k for k in all_keys if any(word in k.lower() for word in ['explain', 'reason', 'rationale'])]
+                        if exp_like_keys:
+                            print(f"[generate_from_input] Found explanation-like keys: {exp_like_keys}")
+                    
+                    # Validate that we have at least some normalized options
+                    if not normalized_options or len(normalized_options) == 0:
+                        error_msg = f"Generated question {idx}: Could not normalize options"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] ❌ {error_msg}")
+                        print(f"[generate_from_input] Original options: {options}")
                         continue
+                    
+                    print(f"[generate_from_input] ✅ Normalized {len(normalized_options)} options")
+
+                    # Try multiple possible field names for correct answers
+                    correct_answers = (q_data.get('correct_answers') or 
+                                      q_data.get('correct_answer') or 
+                                      q_data.get('answer') or 
+                                      q_data.get('answers') or 
+                                      q_data.get('solution') or q_data.get('Correct Answer') or [])
+                    
+                    # If not a list, try to convert
+                    if correct_answers and not isinstance(correct_answers, list):
+                        if isinstance(correct_answers, str):
+                            # Split comma-separated answers
+                            correct_answers = [ans.strip() for ans in correct_answers.split(',') if ans.strip()]
+                        else:
+                            correct_answers = [correct_answers]
+
+
+                    # Check for correct_answer_a, correct_answer_b format
+                    if not correct_answers or len(correct_answers) == 0:
+                        extracted_answers = []
+                        option_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+                        
+                        for letter in option_letters:
+                            answer_key = f'correct_answer_{letter}'
+                            if answer_key in q_data:
+                                answer_text = str(q_data[answer_key]).strip()
+                                if answer_text:
+                                    extracted_answers.append(answer_text)
+                        
+                        if extracted_answers:
+                            correct_answers = extracted_answers
+                            print(f"[generate_from_input] ✅ Extracted correct answers from correct_answer_a/correct_answer_b format")
+                    
+                    # Check for answer_a, answer_b format
+                    if not correct_answers or len(correct_answers) == 0:
+                        extracted_answers = []
+                        option_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+                        
+                        for letter in option_letters:
+                            answer_key = f'answer_{letter}'
+                            if answer_key in q_data:
+                                answer_text = str(q_data[answer_key]).strip()
+                                if answer_text:
+                                    extracted_answers.append(answer_text)
+                        
+                        if extracted_answers:
+                            correct_answers = extracted_answers
+                            print(f"[generate_from_input] ✅ Extracted correct answers from answer_a/answer_b format")
+                    
+                    # Don't skip: if correct_answers still empty, use first option as fallback (question goes to manual_review)
+                    if not correct_answers or len(correct_answers) == 0:
+                        if normalized_options and len(normalized_options) > 0:
+                            first_opt_text = normalized_options[0].get('text', '').strip()
+                            if first_opt_text:
+                                correct_answers = [first_opt_text]
+                                print(f"[generate_from_input] ⚠️ No correct answers found; using first option as fallback (question will go to manual review)")
+                            else:
+                                error_msg = f"Generated question {idx}: Missing correct answers and no options to use as fallback"
+                                errors.append(error_msg)
+                                print(f"[generate_from_input] ❌ {error_msg}")
+                                continue
+                        else:
+                            error_msg = f"Generated question {idx}: Missing correct answers"
+                            errors.append(error_msg)
+                            print(f"[generate_from_input] ❌ {error_msg}")
+                            continue
+                    
+                    print(f"[generate_from_input] ✅ Correct answers: {correct_answers}")
 
                     if not isinstance(correct_answers, list):
                         correct_answers = [correct_answers]
@@ -3300,44 +3950,235 @@ def generate_from_input(request):
                             if opt_text.lower() == correct_text.lower():
                                 matched = True
                                 break
-                        
+                       
                         if not matched:
                             all_answers_valid = False
                             break
                     
                     # Determine status: 'generated' if all answers match, 'manual_review' if not
-                    question_status = 'generated' if all_answers_valid else 'manual_review'
+                    # question_status = 'generated' if all_answers_valid else 'manual_review'
                     
                     if not all_answers_valid:
                         print(f"[generate_from_input] Question validation failed - correct answers don't match options exactly. Moving to manual review.")
                         print(f"[generate_from_input] Options: {option_texts}")
                         print(f"[generate_from_input] Correct answers: {correct_answers}")
 
+                    # Validate with Gemini AI using prompt3
+                    gemini_validation_passed = False
+                    max_retries = 3
+                    attempt = 0
+                    gemini_validation_passed = False
+
+                    while attempt < max_retries:
+                        attempt += 1
+                        print(f"[generate_from_input] 🔁 Gemini validation attempt {attempt}/{max_retries}")
+
+                        try:
+                            prompt3 = saved_prompts.get('prompt3', {})
+                            validation_prompt = prompt3.get('prompt', '') if prompt3 else ''
+
+                            if not validation_prompt:
+                                print("[generate_from_input] No validation prompt provided, skipping validation")
+                                gemini_validation_passed = True
+                            else:
+                                overall_explanation = (q_data.get('explanation') or 
+                                                    q_data.get('overall_explanation') or 
+                                                    q_data.get('explanation_text') or 
+                                                    q_data.get('rationale') or 
+                                                    q_data.get('reason') or '').strip()
+
+                                question_for_validation = {
+                                    "question_text": question_text,
+                                    "options": normalized_options,
+                                    "correct_answers": correct_answers,
+                                    "question_type": question_type,
+                                    "explanation": overall_explanation
+                                }
+
+                                gemini_api_key = None
+                                db_key = getattr(settings_obj, 'gemini_api_key', None)
+                                if db_key and str(db_key).strip():
+                                    gemini_api_key = str(db_key).strip()
+                                if not gemini_api_key:
+                                    gemini_api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+                                if not gemini_api_key:
+                                    try:
+                                        from django.conf import settings as django_settings
+                                        if hasattr(django_settings, 'GEMINI_API_KEY') and django_settings.GEMINI_API_KEY:
+                                            gemini_api_key = django_settings.GEMINI_API_KEY.strip()
+                                    except:
+                                        pass
+
+                                if gemini_api_key:
+                                    genai.configure(api_key=gemini_api_key)
+                                    gemini_model_selector = getattr(settings_obj, 'gemini_model_selector', 'gemini-1.5-flash-latest')
+                                    model_name_gemini = get_valid_gemini_model(gemini_model_selector, genai)
+
+                                    validation_full_prompt = f"{validation_prompt}\n\nQuestion to validate:\n{json.dumps(question_for_validation, indent=2)}"
+
+                                    model_gemini = genai.GenerativeModel(model_name_gemini)
+                                    validation_response = model_gemini.generate_content(
+                                        validation_full_prompt,
+                                        generation_config={'temperature': 0, 'max_output_tokens': 1000}
+                                    )
+
+                                    if validation_response and hasattr(validation_response, 'text'):
+                                        import re
+                                        match = re.search(r'\{.*\}', validation_response.text, re.DOTALL)
+                                        if match:
+                                            result = json.loads(match.group())
+                                            status = result.get("status", "").strip().upper()
+                                            gemini_validation_passed = (status == "CLEAN")
+                                            print(f"[generate_from_input] Gemini status: {status}")
+                                        else:
+                                            print("[generate_from_input] Could not parse Gemini response — treating as MANUAL_REVIEW")
+                                            gemini_validation_passed = False
+
+                                    else:
+                                        print("[generate_from_input] Gemini returned no response, assuming valid")
+                                        gemini_validation_passed = False
+                                else:
+                                    print("[generate_from_input] No Gemini API key, skipping validation")
+                                    gemini_validation_passed = False
+
+                        except Exception as gemini_error:
+                            print(f"[generate_from_input] Gemini error: {gemini_error} — sending to manual review")
+                            gemini_validation_passed = False
+
+
+                        # ✅ STOP retrying immediately if validation passed
+                        if gemini_validation_passed:
+                            break
+
+                    # ✅ FINAL STATUS (single source of truth)
+                    # FINAL STATUS — Gemini can only downgrade, never upgrade
+                    if not all_answers_valid:
+                        question_status = 'manual_review'
+                    elif not gemini_validation_passed:
+                        question_status = 'manual_review'
+                    else:
+                        question_status = 'generated'
+
+                                    
                     # Create generated question in CraftsmanQuestion collection and link to session
-                    new_question = CraftsmanQuestion(
-                        course=default_course,
-                        parsing_session=generation_session,  # Link to generation session
-                        question_text=question_text,
-                        question_type=question_type,
-                        options=normalized_options,
-                        correct_answers=correct_answers,
-                        explanation=q_data.get('explanation', ''),
-                        status=question_status,  # 'generated' if valid, 'manual_review' if validation fails
-                        tags=final_tags  # Always populate tags (from AI or source question)
-                    )
-                    new_question.save()
-                    saved_count += 1
+                    # Debug: Print normalized options with explanations before saving
+                    print(f"[generate_from_input] ===== NORMALIZED OPTIONS BEFORE SAVING =====")
+                    for i, opt in enumerate(normalized_options):
+                        opt_text = opt.get('text', '')[:50] if opt.get('text') else ''
+                        opt_exp = opt.get('explanation', '')[:50] if opt.get('explanation') else '(empty)'
+                        print(f"[generate_from_input] Option {i+1}: text='{opt_text}...', explanation='{opt_exp}...'")
+                    print(f"[generate_from_input] ============================================")
+                    
+                    print(f"[generate_from_input] Attempting to save question {idx} with status: {question_status}")
+                    print(f"[generate_from_input] Question text: {question_text[:100]}...")
+                    print(f"[generate_from_input] Options count: {len(normalized_options)}")
+                    print(f"[generate_from_input] Correct answers: {correct_answers}")
+                    print(f"[generate_from_input] Generation session ID: {generation_session.id}")
+                    
+                    try:
+                        # Extract overall explanation from multiple possible field names (try all variations)
+                        # Handle case where value might be dict, string, or other type
+                        explanation = ''
+                        overall_exp_candidates = [
+                            q_data.get('Overall Explanation'),
+                            q_data.get('overall_explanation'),
+                            q_data.get('Overall_Explanation'),
+                            q_data.get('explanation_text'),
+                            q_data.get('rationale'),
+                            q_data.get('reason'),
+                            q_data.get('explanation')  # Check this last as it might be the dict
+                        ]
+                        
+                        for candidate in overall_exp_candidates:
+                            if candidate:
+                                # If it's a string, use it
+                                if isinstance(candidate, str) and candidate.strip():
+                                    explanation = candidate.strip()
+                                    break
+                                # If it's a dict, skip (that's the option explanations dict)
+                                elif isinstance(candidate, dict):
+                                    continue
+                                # Otherwise, try to convert to string
+                                else:
+                                    candidate_str = str(candidate).strip()
+                                    if candidate_str and len(candidate_str) > 10:
+                                        explanation = candidate_str
+                                        break
+                        
+                        if explanation:
+                            print(f"[generate_from_input] ✅ Overall explanation extracted: {explanation[:100]}...")
+                        else:
+                            print(f"[generate_from_input] ⚠️ No overall explanation found in q_data")
+                            # Debug: show available keys that might contain explanation
+                            possible_keys = [k for k in q_data.keys() if any(word in k.lower() for word in ['explain', 'rationale', 'reason', 'summary', 'overall'])]
+                            if possible_keys:
+                                print(f"[generate_from_input] Possible explanation keys found: {possible_keys}")
+                            # Try to get from any key containing 'overall' and 'explanation' (case-insensitive)
+                            for key in q_data.keys():
+                                key_lower = key.lower()
+                                if 'overall' in key_lower and 'explanation' in key_lower:
+                                    candidate = q_data.get(key)
+                                    if candidate and isinstance(candidate, str):
+                                        potential_exp = candidate.strip()
+                                        if potential_exp and len(potential_exp) > 10:
+                                            explanation = potential_exp
+                                            print(f"[generate_from_input] ✅ Found overall explanation in key '{key}': {explanation[:100]}...")
+                                            break
+                   
+                        new_question = CraftsmanQuestion(
+                            course=default_course,
+                            parsing_session=generation_session,  # Link to generation session
+                            question_text=question_text,
+                            question_type=question_type,
+                            options=normalized_options,
+                            correct_answers=correct_answers,
+                            explanation=explanation,
+                            status=question_status,  # 'generated' if valid, 'manual_review' if validation fails
+                            tags=final_tags  # Always populate tags (from AI or source question)
+                        )
+                        new_question.save()
+                        saved_count += 1
+                        print(f"[generate_from_input] ✅ Successfully generated and saved question {saved_count} from input question {idx}")
+                        print(f"[generate_from_input] Saved question - ID: {new_question.id}, Status: {question_status}")
+                        print(f"[generate_from_input] Question session ID: {new_question.parsing_session.id if new_question.parsing_session else 'None'}, Expected: {generation_session.id}")
+                        
+                        # Verify the question was saved with the correct session
+                        if new_question.parsing_session and str(new_question.parsing_session.id) != str(generation_session.id):
+                            print(f"[generate_from_input] ERROR: Question saved with wrong session! Expected {generation_session.id}, got {new_question.parsing_session.id}")
+                    except Exception as save_error:
+                        error_msg = f"Error saving question {idx} to database: {str(save_error)}"
+                        errors.append(error_msg)
+                        print(f"[generate_from_input] ❌ {error_msg}")
+                        import traceback
+                        print(f"[generate_from_input] Save error traceback: {traceback.format_exc()}")
+                        continue
 
                 except Exception as e:
-                    errors.append(f"Error generating question: {str(e)}")
+                    import traceback
+                    error_msg = f"Error generating question from input question {idx}: {str(e)}"
+                    errors.append(error_msg)
+                    print(f"[generate_from_input] ❌ {error_msg}")
+                    print(f"[generate_from_input] Traceback: {traceback.format_exc()}")
+                    print(f"[generate_from_input] ========================================")
                     continue
+            
+            print(f"[generate_from_input] Completed processing input question {idx}/{total_input_questions}. Generated {saved_count} question(s) so far.")
+            print(f"[generate_from_input] ========================================")
 
         # Update generation session with statistics
+        # Use ObjectId for filtering to ensure correct matching
+        session_obj_id = ObjectId(str(generation_session.id))
         session_questions = CraftsmanQuestion.objects(
-            parsing_session=generation_session)
+            parsing_session=session_obj_id)
         input_count = session_questions.filter(status='input').count()
-        generated_count = session_questions.filter(status='generated').count()
+        # Count all generated questions (both validated and not validated)
+        generated_count = session_questions.filter(status__in=['generated', 'manual_review']).count()
         total_count = session_questions.count()
+        print(f"[generate_from_input] Session statistics for session {generation_session.id}:")
+        print(f"[generate_from_input]   - Input questions: {input_count}")
+        print(f"[generate_from_input]   - Generated questions (all): {generated_count}")
+        print(f"[generate_from_input]   - Total questions: {total_count}")
+        print(f"[generate_from_input]   - Questions saved in this run: {saved_count}")
 
         generation_session.total_questions = total_count
         generation_session.input_questions_count = input_count
@@ -3352,18 +4193,52 @@ def generate_from_input(request):
         generation_session.save()
         print(
             f"[generate_from_input] Updated generation session {generation_session.id}: {saved_count} new questions saved, total: {total_count}")
+        print(f"[generate_from_input] Generation complete: Processed {total_input_questions} input question(s), generated {saved_count} new question(s)")
+        
+        if saved_count < total_input_questions:
+            print(f"[generate_from_input] WARNING: Only generated {saved_count} question(s) from {total_input_questions} input question(s). Some questions may have failed generation.")
+            if errors:
+                print(f"[generate_from_input] Errors encountered: {len(errors)} error(s)")
+                for error in errors[:10]:  # Print first 10 errors
+                    print(f"[generate_from_input]   - {error}")
 
         # Note: CraftsmanQuestions are stored separately, so we don't update course.questions count
         # If you want to track craftsman questions separately, consider adding a craftsman_questions field to Course
 
+        # Get all generated questions for this session to include in response
+        # This matches what's shown in the Generated Questions tab
+        session_obj_id = ObjectId(str(generation_session.id))
+        all_generated_questions = CraftsmanQuestion.objects(
+            parsing_session=session_obj_id,
+            status__in=['generated', 'manual_review']
+        ).order_by('-created_at')
+
+        # Serialize the generated questions
+        questions_data = []
+        if all_generated_questions:
+            serializer = QuestionSerializer(list(all_generated_questions), many=True)
+            questions_data = serializer.data
+            print(f"[generate_from_input] Including {len(questions_data)} generated questions in response")
+
         return JsonResponse({
             "success": True,
-            "message": f"Successfully generated {saved_count} new question(s)",
+            "message": f"Successfully generated {saved_count} new question(s) from {total_input_questions} input question(s)",
+
+            # Counts
             "saved_count": saved_count,
+            "total_input_questions": total_input_questions,
+
+            # Errors
             "errors": errors,
-            # Return session ID for frontend
-            "session_id": str(generation_session.id)
+
+            # Session
+            "session_id": str(generation_session.id),
+
+            # Generated questions data (matches what's shown in Generated Questions tab)
+            "questions": questions_data
+
         })
+
     except Exception as e:
         import traceback
         error_msg = str(e)
@@ -3385,23 +4260,88 @@ def update_parsed_question(request, question_id):
 
         question = CraftsmanQuestion.objects.get(id=ObjectId(question_id))
         data = request.data
+        print("data : ",data)
+        
+        # Track original status - if it's a generated question (validated or not), keep it visible
+        # Manual review queue shows all generated questions (both 'generated' and 'manual_review')
+        original_status = question.status
+        is_generated_question = original_status in ['generated', 'manual_review']
+        print("is_generated_question : ",is_generated_question)
+        print 
 
-        # Update fields
+        # Update fields with validation
         if 'question_text' in data:
-            question.question_text = data['question_text']
+            question_text = data['question_text']
+            if not question_text or not str(question_text).strip():
+                return Response({"success": False, "error": "Question text cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+            question.question_text = str(question_text).strip()
+        
         if 'question_type' in data:
-            question.question_type = data['question_type']
+            question_type = data['question_type']
+            # Normalize question type format
+            if question_type in ['single', 'single-correct']:
+                question.question_type = 'single'
+            elif question_type in ['multiple', 'multi-correct']:
+                question.question_type = 'multiple'
+            else:
+                question.question_type = question_type
+        
         if 'options' in data:
-            question.options = data['options']
+            options = data['options']
+            if not isinstance(options, list):
+                return Response({"success": False, "error": "Options must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+            if len(options) < 2:
+                return Response({"success": False, "error": "At least 2 options are required"}, status=status.HTTP_400_BAD_REQUEST)
+            question.options = options
+        
         if 'correct_answers' in data:
-            question.correct_answers = data['correct_answers']
+            correct_answers = data['correct_answers']
+            if not isinstance(correct_answers, list):
+                correct_answers = [correct_answers] if correct_answers else []
+            if len(correct_answers) == 0:
+                return Response({"success": False, "error": "At least one correct answer is required"}, status=status.HTTP_400_BAD_REQUEST)
+            question.correct_answers = correct_answers
+        
         if 'explanation' in data:
-            question.explanation = data.get('explanation', '')
+            question.explanation = str(data.get('explanation', '')).strip()
+        
         if 'status' in data:
+            print(data['status'],"stas")
             # status field for craftsman questions
-            question.status = data['status']
+            new_status = data['status']
+            # If question is a generated question (validated or not validated), 
+            # keep it in one of the generated statuses to ensure it remains visible
+            # in manual review queue after manual correction
+            # if is_generated_question:
+            #     # Keep in original status (either 'generated' or 'manual_review')
+            #     # This ensures manually corrected questions remain visible
+            #     question.status = original_status
+            # else:
+            #     # If it wasn't a generated question, use the provided status
+
+             # Map frontend statuses to backend allowed statuses
+            status_mapping = {
+                'needs_review': 'manual_review',
+                'pending': 'pending',
+                'approved': 'approved',
+                'rejected': 'rejected'
+            }
+            mapped_status = status_mapping.get(new_status)
+            if not mapped_status:
+                # If frontend sent invalid status, keep original
+                mapped_status = original_status
+            question.status = mapped_status
+        elif is_generated_question:
+            # If no status provided but question is a generated question, keep original status
+            question.status = original_status
+        
         if 'tags' in data:
-            question.tags = data['tags']
+            tags = data['tags']
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.split(',') if t.strip()]
+            elif not isinstance(tags, list):
+                tags = []
+            question.tags = tags
 
         question.updated_at = datetime.datetime.utcnow()
         question.save()
@@ -3415,6 +4355,7 @@ def update_parsed_question(request, question_id):
     except CraftsmanQuestion.DoesNotExist:
         return Response({"success": False, "error": "Question not found"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
+        print(e,"error")
         return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
