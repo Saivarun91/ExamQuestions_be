@@ -1,4 +1,5 @@
 """Generate questions from input (OpenAI) and list generated questions."""
+import random
 import json
 import re
 import uuid
@@ -37,7 +38,7 @@ def _correct_answers_to_option_numbers(options, correct_answers):
         return ""
     opts = []
     print("options:", options)
-    
+
     for o in (options or []):
         if isinstance(o, dict):
             opts.append((o.get("text") or o.get("value") or "").strip())
@@ -49,6 +50,7 @@ def _correct_answers_to_option_numbers(options, correct_answers):
         if not s:
             continue
         # Exact or normalized match (whitespace, case)
+
         def _norm(txt):
             if not txt:
                 return ""
@@ -87,11 +89,13 @@ def _get_input_questions_for_session(session_id):
         session_id = (getattr(latest, "session_id", None) or "").strip()
     if not session_id:
         return [], None
-    qs = ParsedInputQuestion.objects(session_id=session_id).order_by("created_at")
+    qs = ParsedInputQuestion.objects(
+        session_id=session_id).order_by("created_at")
     out = []
     for q in qs:
         opts = getattr(q, 'options', []) or []
-        opts = [o.get("text", str(o)) if isinstance(o, dict) else str(o) for o in opts]
+        opts = [o.get("text", str(o)) if isinstance(
+            o, dict) else str(o) for o in opts]
         out.append({
             "id": str(q.id),          # <-- ADD THIS LINE
             "question_text": q.question_text,
@@ -100,8 +104,6 @@ def _get_input_questions_for_session(session_id):
 
     return out, session_id
 
-
-import random
 
 def shuffle_options_and_correct(options, correct_answers):
     """
@@ -143,16 +145,19 @@ def generate_from_input(request):
 
         prompts = getattr(settings_obj, 'prompts', {}) or {}
         prompt2 = prompts.get('prompt2', {})
-        generate_prompt = (prompt2.get('prompt', '') if prompt2 else '').strip()
+        generate_prompt = (prompt2.get('prompt', '')
+                           if prompt2 else '').strip()
         if not generate_prompt:
             return JsonResponse({"success": False, "error": "Please set Prompt 2 in Configuration."}, status=400)
 
-        session_id = (request.data.get("session_id") or "").strip() if request.data else ""
-        print("session_id : ",session_id)
-        input_list, session_id = _get_input_questions_for_session(session_id if session_id else None)
+        session_id = (request.data.get("session_id")
+                      or "").strip() if request.data else ""
+        print("session_id : ", session_id)
+        input_list, session_id = _get_input_questions_for_session(
+            session_id if session_id else None)
         if not input_list:
             return JsonResponse({"success": False, "error": "No input questions found. Parse a document first."}, status=400)
-        input_questions_count = len(input_list)        
+        input_questions_count = len(input_list)
 
         model = getattr(settings_obj, 'model_selector', 'gpt-4') or 'gpt-4'
         temperature = float(getattr(settings_obj, 'temperature', 0.3))
@@ -211,7 +216,8 @@ def generate_from_input(request):
             opts = [_to_option_dict(o) for o in raw_opts]
             options_len = len(opts)
 
-            question_text = (g.get("question_text") or g.get("question") or "").strip()
+            question_text = (g.get("question_text")
+                             or g.get("question") or "").strip()
             if not question_text:
                 print(f"Skipping empty question_text at index {idx}")
                 continue
@@ -232,7 +238,8 @@ def generate_from_input(request):
                         correct.append(xi)
 
             if not correct:
-                print(f"Skipping question {idx}: no valid correct_answers → {correct_raw}")
+                print(
+                    f"Skipping question {idx}: no valid correct_answers → {correct_raw}")
                 continue
 
             # --- Shuffle safely ---
@@ -263,7 +270,7 @@ def generate_from_input(request):
                 options=opts,
                 correct_answers=[str(c) for c in correct],
                 explanation=overall_explanation,
-                session_id = session_id,
+                session_id=session_id,
                 # batch_id=run_batch_id,
             ).save()
 
@@ -282,8 +289,6 @@ def generate_from_input(request):
 
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
-
-
 
 
 # @api_view(['GET'])
@@ -359,19 +364,22 @@ def generate_from_input(request):
 def get_generated_questions(request):
     """Return generated questions for the given batch_id only (current document). No batch_id or empty = return [] so count is not from previous uploads."""
     try:
-        session_id = (request.GET.get("session_id")).strip()
-        print("session_id : ",session_id)
+        session_id = (request.GET.get("session_id") or "").strip()
         if not session_id:
             return Response({"success": True, "questions": [], "count": 0})
 
-        qs = GeneratedQuestion.objects(session_id=session_id).order_by("created_at")
-        print("qs : ",qs)
+        qs = GeneratedQuestion.objects(
+            session_id=session_id).order_by("created_at")
+        print("qs : ", qs)
+
         def _normalize_option(o):
             if o is None:
                 return {"text": "", "explanation": ""}
             if hasattr(o, "get") and callable(getattr(o, "get")):
-                text = (o.get("text") or o.get("value") or o.get("option") or o.get("label") or "")
-                expl = (o.get("explanation") or o.get("reason") or o.get("desc") or "")
+                text = (o.get("text") or o.get("value") or o.get(
+                    "option") or o.get("label") or "")
+                expl = (o.get("explanation") or o.get(
+                    "reason") or o.get("desc") or "")
                 return {"text": str(text).strip() if text else "", "explanation": str(expl).strip() if expl else ""}
             return {"text": str(o).strip(), "explanation": ""}
 
@@ -395,7 +403,8 @@ def get_generated_questions(request):
             nums_str = _correct_answers_to_option_numbers(options, correct)
             correct_numbers = nums_str.split(", ") if nums_str else []
 
-            question_text_val = (getattr(q, "question_text", None) or "").strip()
+            question_text_val = (
+                getattr(q, "question_text", None) or "").strip()
             explanation_val = (getattr(q, "explanation", None) or "").strip()
 
             out.append({
@@ -433,7 +442,8 @@ def update_generated_question(request, question_id):
             return JsonResponse({"success": False, "error": "Question not found."}, status=404)
         data = request.data
         if "question_text" in data and data["question_text"] is not None:
-            q.question_text = (data["question_text"] or "").strip() or q.question_text
+            q.question_text = (data["question_text"]
+                               or "").strip() or q.question_text
         if "options" in data and isinstance(data["options"], list):
             opts_clean = []
             for o in data["options"]:
@@ -449,7 +459,8 @@ def update_generated_question(request, question_id):
             q.correct_answers = [str(a) for a in data["correct_answers"]]
         elif "correct_answers" in data and data["correct_answers"] is not None:
             q.correct_answers = [str(data["correct_answers"])]
-        q.question_type = _question_type_from_correct_answers(q.correct_answers)
+        q.question_type = _question_type_from_correct_answers(
+            q.correct_answers)
         if "explanation" in data and data["explanation"] is not None:
             q.explanation = str(data["explanation"] or "")
         q.save()
@@ -504,14 +515,16 @@ def regenerate_questions(request):
     """Regenerate selected generated questions into entirely new questions using Prompt2."""
     try:
         from settings_app.models import AdminSettings
-        import openai, json
+        import openai
+        import json
 
         data = request.data or {}
         ids = data.get("ids") or []
         if not isinstance(ids, list):
             ids = [ids] if ids else []
 
-        qs = [_get_generated_by_id(qid) for qid in ids if _get_generated_by_id(qid)]
+        qs = [_get_generated_by_id(qid)
+              for qid in ids if _get_generated_by_id(qid)]
         if not qs:
             return JsonResponse({"success": True, "message": "No questions to regenerate.", "regenerated_count": 0})
 
@@ -522,7 +535,8 @@ def regenerate_questions(request):
 
         prompts = getattr(settings_obj, "prompts", {}) or {}
         prompt2 = prompts.get("prompt2", {})
-        generate_prompt = (prompt2.get("prompt", "") if prompt2 else "").strip()
+        generate_prompt = (prompt2.get("prompt", "")
+                           if prompt2 else "").strip()
         if not generate_prompt:
             return JsonResponse({"success": False, "error": "Prompt2 is empty in Admin Settings."}, status=400)
 
@@ -566,9 +580,11 @@ def regenerate_questions(request):
 
             q.question_text = (g.get("question_text") or "").strip()
             q.options = g.get("options") or []
-            q.correct_answers = [str(x) for x in (g.get("correct_answers") or [])]
+            q.correct_answers = [str(x)
+                                 for x in (g.get("correct_answers") or [])]
             q.explanation = (g.get("explanation") or "").strip()
-            q.question_type = _question_type_from_correct_answers(q.correct_answers)
+            q.question_type = _question_type_from_correct_answers(
+                q.correct_answers)
             q.save()
 
         return JsonResponse({
@@ -673,7 +689,8 @@ def validate_with_gemini(request):
                     "message": "No generated questions to validate.",
                 })
             batch_id = getattr(latest, "batch_id", None) or ""
-            qs = list(GeneratedQuestion.objects(batch_id=batch_id).order_by("created_at"))
+            qs = list(GeneratedQuestion.objects(
+                batch_id=batch_id).order_by("created_at"))
 
         if not qs:
             return JsonResponse({"success": True, "results": [], "message": "No questions to validate."})
@@ -717,7 +734,6 @@ def validate_with_gemini(request):
             + json.dumps(payload, indent=2)
         )
 
-
         try:
             import google.generativeai as genai
         except ImportError:
@@ -733,8 +749,10 @@ def validate_with_gemini(request):
             model_name = f"models/{model_name}"
         model = genai.GenerativeModel(model_name)
         temp = float(getattr(settings_obj, "temperature", 0.3))
-        response = model.generate_content(prompt, generation_config={"temperature": temp})
-        text = (response.text or "").strip() if hasattr(response, "text") else ""
+        response = model.generate_content(
+            prompt, generation_config={"temperature": temp})
+        text = (response.text or "").strip() if hasattr(
+            response, "text") else ""
         if not text and hasattr(response, "candidates") and response.candidates:
             part = response.candidates[0].content.parts[0] if response.candidates[0].content.parts else None
             text = (part.text if part else "").strip()

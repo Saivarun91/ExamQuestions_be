@@ -47,8 +47,8 @@ def _get_validated_by_id(validated_id):
         return None
 
 
-def _get_generated_questions_for_validation(ids=None):
-    """Get GeneratedQuestion list by ids or latest batch. Returns list of GeneratedQuestion docs."""
+def _get_generated_questions_for_validation(ids=None, session_id=None):
+    """Get GeneratedQuestion list by ids or by session_id. Returns list of GeneratedQuestion docs."""
     from question_generator.models import GeneratedQuestion
     if ids:
         from bson import ObjectId
@@ -62,13 +62,11 @@ def _get_generated_questions_for_validation(ids=None):
                 pass
         qs.sort(key=lambda x: x.created_at)
         return qs
-    latest = GeneratedQuestion.objects.order_by("-created_at").first()
-    if not latest:
+    # When no ids: use session_id so validated count matches generated count for this session
+    sid = (session_id or "").strip()
+    if not sid:
         return []
-    batch_id = getattr(latest, "batch_id", None) or ""
-    if not batch_id:
-        return list(GeneratedQuestion.objects.order_by("-created_at")[:100])
-    return list(GeneratedQuestion.objects(batch_id=batch_id).order_by("created_at"))
+    return list(GeneratedQuestion.objects(session_id=sid).order_by("created_at"))
 
 
 
@@ -88,10 +86,13 @@ def run_validation(request):
         from parsing_suite.helpers import get_gemini_key, get_valid_gemini_model
         import uuid
 
-        data = request.data or {}  # ← move this up!
-        print("data from frontend : ",data)
-        session_id = data.get("session_id")
-        print("session_id : ",session_id)
+        data = request.data or {}
+        session_id = (data.get("session_id") or "").strip()
+        if not session_id:
+            return JsonResponse({
+                "success": False,
+                "error": "session_id is required. Parse and save a document first to create a session.",
+            }, status=400)
         settings_obj = AdminSettings.objects.first() or AdminSettings()
         key = get_gemini_key(settings_obj)
         if not key:
@@ -109,28 +110,26 @@ def run_validation(request):
                 "error": "Prompt 3 (Validate Generated Answer) is not set. Set it in Admin / Configuration.",
             }, status=400)
 
-        data = request.data or {}
         ids = data.get("ids")
         if ids is not None and not isinstance(ids, list):
             ids = [ids]
-        qs = _get_generated_questions_for_validation(ids)
+        qs = _get_generated_questions_for_validation(ids=ids, session_id=session_id)
         if not qs:
             return JsonResponse({
                 "success": True,
                 "message": "No generated questions to validate.",
                 "validated_count": 0,
-                "batch_id": "",
+                "session_id": session_id,
             })
 
-        # When revalidating selected: update existing latest batch (delete old, add new). Otherwise new batch.
-        # run_batch_id = str(uuid.uuid4())
+        # Keep validated in sync with session: replace validated for this run only
+        gen_ids = [str(q.id) for q in qs]
         if ids:
-            latest = ValidatedQuestion.objects(session_id=session_id).order_by("-validated_at").first()
-            if latest:
-                session_id = getattr(latest, "session_id", None) or ""
-                if session_id:
-                    gen_ids = [str(q.id) for q in qs]
-                    ValidatedQuestion.objects(session_id=session_id, generated_question_id__in=gen_ids).delete()
+            # Revalidate selected: delete only validated rows for these generated ids in this session
+            ValidatedQuestion.objects(session_id=session_id, generated_question_id__in=gen_ids).delete()
+        else:
+            # Validate all: replace entire validated set for this session with this run
+            ValidatedQuestion.objects(session_id=session_id).delete()
 
         try:
             import google.generativeai as genai
@@ -248,21 +247,12 @@ def run_validation(request):
 @authenticate
 @restrict(['admin'])
 def get_validated_questions(request):
-    """Return validated questions (latest batch first). Optional ?batch_id= for a specific run."""
+    """Return validated questions for the given session_id. No session_id = empty list (session-based only)."""
     try:
-        session_id = (request.GET.get("session_id")).strip()
-        print("session_id : ",session_id)
-        if session_id:
-            qs = ValidatedQuestion.objects(session_id=session_id).order_by("validated_at")
-        else:
-            latest = ValidatedQuestion.objects(session_id=session_id).order_by("-validated_at").first()
-            if not latest:
-                return Response({"success": True, "questions": [], "count": 0})
-            session_id = getattr(latest, "session_id", None) or ""
-            if not session_id:
-                return Response({"success": True, "questions": [], "count": 0})
-            else:
-                qs = ValidatedQuestion.objects(session_id=session_id).order_by("validated_at")
+        session_id = (request.GET.get("session_id") or "").strip()
+        if not session_id:
+            return Response({"success": True, "questions": [], "count": 0})
+        qs = ValidatedQuestion.objects(session_id=session_id).order_by("validated_at")
         out = []
         for q in qs:
             explanation = getattr(q, "explanation", "") or ""
