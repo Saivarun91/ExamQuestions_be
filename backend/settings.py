@@ -10,8 +10,8 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 # =================== SECURITY ===================
 SECRET_KEY = os.environ.get('SECRET_KEY')
 
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
-
+# DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+DEBUG = True
 ALLOWED_HOSTS = os.environ.get(
     'ALLOWED_HOSTS',
     'backendapi.allexamquestions.com'
@@ -58,6 +58,9 @@ INSTALLED_APPS = [
     'blog',
     'questions',
     'pricing',
+    'parsing_suite',
+    'question_generator',
+    'question_validation',
 ]
 
 # =================== MIDDLEWARE ===================
@@ -185,3 +188,11 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 # =================== QUESTION CRAFTSMAN CONFIG ===================
 QUESTION_CRAFTSMAN_CONFIG = os.environ.get('QUESTION_CRAFTSMAN_CONFIG')
 
+# ==========================
+# Session configuration
+# ==========================
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
+
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SECURE = False  # set True only when using HTTPS

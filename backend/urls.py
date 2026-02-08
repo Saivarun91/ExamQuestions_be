@@ -25,6 +25,9 @@ urlpatterns = [
     path("api/notifications/", include("notifications.urls")),
     path("api/providers/", include("providers.urls")),
     path("api/pricing/", include("pricing.urls")),
+    path("api/parsing-suite/", include("parsing_suite.urls")),
+    path("api/question-generator/", include("question_generator.urls")),
+    path("api/question-validation/", include("question_validation.urls")),
     # Catch-all pattern last
     path('api/', include('exams.urls')),
     path("sitemap.xml", sitemap_view), 

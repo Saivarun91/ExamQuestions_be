@@ -3,7 +3,7 @@ from datetime import datetime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from common.middleware import authenticate, restrict
-from .models import AdminSettings, PrivacyPolicy, TermsOfService, RefundCancellationPolicy, Disclaimer, ContactUs, Sitemap, SitemapURL
+from .models import AdminSettings, PrivacyPolicy, TermsOfService, RefundCancellationPolicy, Disclaimer, ContactUs, EditorPolicy, Sitemap, SitemapURL
 
 @csrf_exempt
 def get_public_settings(request):
@@ -459,6 +459,66 @@ def update_contact_us(request):
         contact.save()
         
         return JsonResponse({"success": True, "message": "Contact us details updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= EDITOR POLICY =================
+@csrf_exempt
+def get_editor_policy(request):
+    """Get editor policy content (public endpoint)."""
+    try:
+        policy = EditorPolicy.objects.first()
+        if not policy:
+            policy = EditorPolicy(content="Editor policy content will be updated by admin.")
+            policy.save()
+
+        updated_at_str = None
+        if policy.updated_at:
+            try:
+                updated_at_str = policy.updated_at.isoformat() if hasattr(policy.updated_at, 'isoformat') else str(policy.updated_at)
+            except Exception:
+                updated_at_str = None
+
+        return JsonResponse({
+            "success": True,
+            "content": policy.content or "Editor policy content will be updated by admin.",
+            "meta_title": getattr(policy, 'meta_title', '') or '',
+            "meta_keywords": getattr(policy, 'meta_keywords', '') or '',
+            "meta_description": getattr(policy, 'meta_description', '') or '',
+            "updated_at": updated_at_str
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_editor_policy(request):
+    """Update editor policy content (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        content = body.get("content", "")
+
+        if not content:
+            return JsonResponse({"success": False, "error": "Content is required"}, status=400)
+
+        policy = EditorPolicy.objects.first()
+        if not policy:
+            policy = EditorPolicy()
+
+        policy.content = content
+        policy.meta_title = body.get("meta_title", policy.meta_title or "")
+        policy.meta_keywords = body.get("meta_keywords", policy.meta_keywords or "")
+        policy.meta_description = body.get("meta_description", policy.meta_description or "")
+        policy.updated_at = datetime.utcnow()
+        policy.save()
+
+        return JsonResponse({"success": True, "message": "Editor policy updated successfully"}, status=200)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 

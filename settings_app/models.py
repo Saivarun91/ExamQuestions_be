@@ -103,6 +103,16 @@ class ContactUs(Document):
     meta = {'collection': 'contact_us'}
 
 
+class EditorPolicy(Document):
+    content = StringField(required=True, default="")
+    meta_title = StringField(default="")
+    meta_keywords = StringField(default="")
+    meta_description = StringField(default="")
+    updated_at = DateTimeField(default=datetime.utcnow)
+
+    meta = {'collection': 'editor_policy'}
+
+
 class SitemapURL(EmbeddedDocument):
     url = StringField(required=True)
     priority = FloatField(default=0.5, min_value=0.0, max_value=1.0)
