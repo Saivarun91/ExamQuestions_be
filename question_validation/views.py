@@ -391,7 +391,7 @@ def download_validated_questions_csv(request):
     def get_question_type(q):
         answers = q.openai_answers or q.gemini_answers or []
         return "single-correct" if len(answers) <= 1 else "multiple-correct"
-
+ 
     # Create CSV response
     response = HttpResponse(content_type="text/csv")
     response["Content-Disposition"] = (

@@ -652,6 +652,7 @@ def upload_questions_csv(request):
             return JsonResponse({"error": "CSV encoding not supported", "success": False}, status=400)
 
         reader = csv.DictReader(io.StringIO(decoded))
+        # print("📋 CSV Headers:", reader.fieldnames)
 
         if not reader.fieldnames:
             return JsonResponse({"error": "CSV must contain headers", "success": False}, status=400)
@@ -690,6 +691,14 @@ def upload_questions_csv(request):
                 for letter in ['A', 'B', 'C', 'D', 'E', 'F']:
                     opt = get_row_value(
                         row, [f'answer option {letter}', f'option {letter}'])
+                # for idx, letter in enumerate(['A', 'B', 'C', 'D', 'E', 'F'], start=1):
+                #     opt = get_row_value(
+                #         row, [
+                #             f'answer option {letter}',
+                #             f'option {letter}',
+                #             f'option{idx}',          # 👈 supports option1, option2
+                #         ]
+                #     )
                     exp = get_row_value(row, [f'explanation {letter}'])
                     if opt and str(opt).strip():
                         option_data = {"text": str(opt).strip()}
