@@ -15,19 +15,24 @@ def get_pricing_plans(request):
             plans_data.append({
                 'id': str(plan.id),
                 'name': plan.name,
-                'price': plan.price,
+                # 'price': plan.price,
+                'price': int(plan.price) if plan.price is not None else 0,
                 'currency': plan.currency,
                 'currency_symbol': plan.currency_symbol,
                 'duration_months': plan.duration_months,
                 'duration_days': plan.duration_days,
-                'original_price': plan.original_price,
-                'discount_percentage': plan.discount_percentage,
-                'per_day_cost': plan.per_day_cost,
+                # 'original_price': plan.original_price,
+                'original_price': int(plan.original_price) if plan.original_price is not None else 0,
+                # 'discount_percentage': plan.discount_percentage,
+                'discount_percentage': int(plan.discount_percentage) if plan.discount_percentage is not None else 0,
+                # 'per_day_cost': plan.per_day_cost,
+                'per_day_cost': str(int(plan.per_day_cost)) if plan.per_day_cost else "0",
                 'features': plan.features,
                 'color_scheme': plan.color_scheme,
                 'is_popular': plan.is_popular,
                 'pdf_enabled': plan.pdf_enabled,
-                'pdf_price': plan.pdf_price,
+                # 'pdf_price': plan.pdf_price,
+                'pdf_price': int(plan.pdf_price) if plan.pdf_price is not None else 0,
                 'is_active': plan.is_active,
                 'created_at': plan.created_at.isoformat() if plan.created_at else None,
             })
@@ -54,19 +59,24 @@ def admin_get_all_plans(request):
             plans_data.append({
                 'id': str(plan.id),
                 'name': plan.name,
-                'price': plan.price,
+                # 'price': plan.price,
+                'price': int(plan.price) if plan.price is not None else 0,
                 'currency': plan.currency,
                 'currency_symbol': plan.currency_symbol,
                 'duration_months': plan.duration_months,
                 'duration_days': plan.duration_days,
-                'original_price': plan.original_price,
-                'discount_percentage': plan.discount_percentage,
-                'per_day_cost': plan.per_day_cost,
+                # 'original_price': plan.original_price,
+                'original_price': int(plan.original_price) if plan.original_price is not None else 0,
+                # 'discount_percentage': plan.discount_percentage,
+                'discount_percentage': int(plan.discount_percentage) if plan.discount_percentage is not None else 0,
+                # 'per_day_cost': plan.per_day_cost,
+                'per_day_cost': str(int(plan.per_day_cost)) if plan.per_day_cost else "0",
                 'features': plan.features,
                 'color_scheme': plan.color_scheme,
                 'is_popular': plan.is_popular,
                 'pdf_enabled': plan.pdf_enabled,
-                'pdf_price': plan.pdf_price,
+                # 'pdf_price': plan.pdf_price,
+                'pdf_price': int(plan.pdf_price) if plan.pdf_price is not None else 0,
                 'is_active': plan.is_active,
                 'display_order': getattr(plan, 'display_order', 0),
                 'created_at': plan.created_at.isoformat() if plan.created_at else None,
@@ -91,22 +101,21 @@ def admin_create_plan(request):
         
         plan = PricingPlan(
             name=data.get('name'),
-            price=data.get('price'),
+            price=int(float(data.get('price', 0))),
+            original_price=int(float(data.get('original_price', 0))),
             currency=data.get('currency', 'INR'),
             currency_symbol=data.get('currency_symbol', '₹'),
-            duration_months=data.get('duration_months', 1),
-            duration_days=data.get('duration_days', 30),
-            original_price=data.get('original_price', 0),
-            discount_percentage=data.get('discount_percentage', 0),
-            per_day_cost=data.get('per_day_cost', '0'),
+            duration_months=int(data.get('duration_months', 1)),
+            duration_days=int(data.get('duration_days', 30)),
+            discount_percentage=int(float(data.get('discount_percentage', 0))),
+            per_day_cost=str(int(float(data.get('per_day_cost', 0)))),
             features=data.get('features', []),
             color_scheme=data.get('color_scheme', 'blue'),
             is_popular=data.get('is_popular', False),
             pdf_enabled=data.get('pdf_enabled', True),
-            pdf_price=data.get('pdf_price', 0),
+            pdf_price=int(float(data.get('pdf_price', 0))),
             is_active=data.get('is_active', True),
         )
-        
         # Add display_order if present
         if 'display_order' in data:
             plan.display_order = data.get('display_order', 0)
@@ -134,19 +143,24 @@ def admin_update_plan(request, plan_id):
         
         # Update fields
         plan.name = data.get('name', plan.name)
-        plan.price = data.get('price', plan.price)
+        # plan.price = data.get('price', plan.price)
+        plan.price = int(float(data.get('price', plan.price)))
         plan.currency = data.get('currency', plan.currency)
         plan.currency_symbol = data.get('currency_symbol', plan.currency_symbol)
         plan.duration_months = data.get('duration_months', plan.duration_months)
         plan.duration_days = data.get('duration_days', plan.duration_days)
-        plan.original_price = data.get('original_price', plan.original_price)
-        plan.discount_percentage = data.get('discount_percentage', plan.discount_percentage)
-        plan.per_day_cost = data.get('per_day_cost', plan.per_day_cost)
+        # plan.original_price = data.get('original_price', plan.original_price)
+        plan.original_price = int(float(data.get('original_price', plan.original_price)))
+        # plan.discount_percentage = data.get('discount_percentage', plan.discount_percentage)
+        plan.discount_percentage = int(float(data.get('discount_percentage', plan.discount_percentage)))
+        # plan.per_day_cost = data.get('per_day_cost', plan.per_day_cost)
+        plan.per_day_cost = str(int(float(data.get('per_day_cost', plan.per_day_cost))))
         plan.features = data.get('features', plan.features)
         plan.color_scheme = data.get('color_scheme', plan.color_scheme)
         plan.is_popular = data.get('is_popular', plan.is_popular)
         plan.pdf_enabled = data.get('pdf_enabled', plan.pdf_enabled)
-        plan.pdf_price = data.get('pdf_price', plan.pdf_price)
+        # plan.pdf_price = data.get('pdf_price', plan.pdf_price)
+        plan.pdf_price = int(float(data.get('pdf_price', plan.pdf_price)))
         plan.is_active = data.get('is_active', plan.is_active)
         
         if 'display_order' in data:

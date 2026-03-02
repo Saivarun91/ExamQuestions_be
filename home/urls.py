@@ -7,7 +7,7 @@ urlpatterns = [
     path('value-propositions-section/', views.get_value_propositions_section, name='get_value_propositions_section'),
     path('value-propositions/', views.get_value_propositions, name='get_value_propositions'),
     path('testimonials/', views.get_testimonials, name='get_testimonials'),
-    path('blog-posts/', views.get_blog_posts, name='get_blog_posts'),
+    path('blog-posts/', views.get_blog_posts, name='ge  t_blog_posts'),
     path('blog-posts/slug/<str:slug>/', views.get_blog_post_by_slug, name='get_blog_post_by_slug'),
     path('recently-updated-exams/', views.get_recently_updated_exams, name='get_recently_updated_exams'),
     path('faqs/', views.get_faqs, name='get_faqs'),
@@ -22,7 +22,8 @@ urlpatterns = [
     path('blog-posts-section/', views.get_blog_posts_section, name='get_blog_posts_section'),
     path('recently-updated-section/', views.get_recently_updated_section, name='get_recently_updated_section'),
     path('faqs-section/', views.get_faqs_section, name='get_faqs_section'),
-    
+
+  
     # Admin APIs - Hero Section
     path('admin/hero/', views.manage_hero_section, name='manage_hero_section'),
     
@@ -47,6 +48,9 @@ urlpatterns = [
     path('admin/recently-updated-exams/', views.manage_recently_updated_exams, name='manage_recently_updated_exams'),
     path('admin/recently-updated-exams/<str:exam_id>/', views.manage_recently_updated_exam_by_id, name='manage_recently_updated_exam_by_id'),
     
+    # Admin APIs - Exams Page SEO
+    path('admin/exams-page-seo/', views.manage_exams_page_seo, name='manage_exams_page_seo'),
+    
     # Admin APIs - Exams Page
     path('admin/exams-trust-bar/', views.manage_exams_trust_bar, name='manage_exams_trust_bar'),
     path('admin/exams-about/', views.manage_exams_about, name='manage_exams_about'),
@@ -68,13 +72,19 @@ urlpatterns = [
     path('admin/faqs-section/', views.manage_faqs_section, name='manage_faqs_section'),
     
     # Admin APIs - Home Page SEO
-    path('admin/home-page-seo/', views.manage_home_page_seo, name='manage_home_page_seo'),
+    # path('admin/home-page-seo/', views.manage_home_page_seo, name='manage_home_page_seo'),
+    path('home-page-seo/', views.get_home_page_seo, name='get_home_page_seo'),
+  
+    path("admin/home-page-seo/", views.manage_home_page_seo, name='manage_home_page_seo'),
     
     # Admin APIs - Exam Details SEO
     path('admin/exam-details-seo/', views.manage_exam_details_seo, name='manage_exam_details_seo'),
     
     # Admin APIs - Exams Page SEO
     path('admin/exams-page-seo/', views.manage_exams_page_seo, name='manage_exams_page_seo'),
+    
+    path('exams-page-seo/', views.get_exams_page_seo, name='get_exams_page_seo'),
+
     
     # Admin APIs - Pricing Plans SEO
     path('admin/pricing-plans-seo/', views.manage_pricing_plans_seo, name='manage_pricing_plans_seo'),

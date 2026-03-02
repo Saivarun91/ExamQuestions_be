@@ -192,7 +192,6 @@ QUESTION_CRAFTSMAN_CONFIG = os.environ.get('QUESTION_CRAFTSMAN_CONFIG')
 # Session configuration
 # ==========================
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
-
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = False  # set True only when using HTTPS

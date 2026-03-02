@@ -407,6 +407,7 @@ def get_test_questions(request, course_id, test_id):
                 # Default to 'single' for questions app
                 'question_type': getattr(q, 'question_type', 'single'),
                 'options': processed_options,
+                'correct_answers': q.correct_answers,   # 🔥 ADD THIS FOR TEST SCORING
                 'question_image': question_image,
                 'marks': getattr(q, 'marks', 1),
                 'explanation': getattr(q, 'explanation', '') or '',
@@ -683,7 +684,6 @@ def upload_questions_csv(request):
                 if not question_text:
                     errors.append(f"Row {row_num}: Question text missing")
                     continue
-
                 # ----------------------------
                 # Parse options
                 # ----------------------------

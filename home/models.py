@@ -28,6 +28,25 @@ class HeroSection(Document):
         return self.title
 
 
+# =================== EXAMS PAGE SEO ===================
+class ExamsPageSEO(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+    
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "exams_page_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Exams Page SEO - {self.meta_title or 'Untitled'}"
+
+
 # =================== EXAMS PAGE TRUST BAR ===================
 class ExamsPageTrustBar(Document):
     items = ListField(DictField())  # [{ "icon": "CheckCircle2", "label": "94% Match", "description": "Real exam difficulty" }]

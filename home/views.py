@@ -631,6 +631,13 @@ import json
 from datetime import datetime
 
 
+from django.http import JsonResponse
+
+
+from django.http import JsonResponse
+
+
+
 # =================== HERO SECTION ===================
 @csrf_exempt
 def get_hero_section(request):
@@ -2590,37 +2597,71 @@ def manage_faqs_section(request):
 
 
 # =================== HOME PAGE SEO ===================
+# @csrf_exempt
+# @authenticate
+# @restrict(['admin'])
+# def manage_home_page_seo(request):
+#     """Admin: Create/Update home page SEO meta information"""
+#     if request.method in ['POST', 'PUT']:
+#         try:
+#             data = json.loads(request.body)
+#             seo = HomePageSeo.objects(is_active=True).first()
+#             if not seo:
+#                 seo = HomePageSeo()
+#             seo.meta_title = data.get('meta_title', seo.meta_title)
+#             seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+#             seo.meta_description = data.get('meta_description', seo.meta_description)
+#             seo.updated_at = datetime.utcnow()
+#             seo.save()
+#             return JsonResponse({
+#                 "success": True,
+#                 "message": "Home page SEO updated successfully",
+#                 "data": {
+#                     "id": str(seo.id),
+#                     "meta_title": seo.meta_title or "",
+#                     "meta_keywords": seo.meta_keywords or "",
+#                     "meta_description": seo.meta_description or "",
+#                 }
+#             })
+#         except Exception as e:
+#             return JsonResponse({"error": str(e)}, status=500)
+#     elif request.method == 'GET':
+#         try:
+#             seo = HomePageSeo.objects(is_active=True).first()
+#             if not seo:
+#                 return JsonResponse({
+#                     "success": True,
+#                     "data": {
+#                         "meta_title": "",
+#                         "meta_keywords": "",
+#                         "meta_description": "",
+#                     }
+#                 })
+#             return JsonResponse({
+#                 "success": True,
+#                 "data": {
+#                     "id": str(seo.id),
+#                     "meta_title": seo.meta_title or "",
+#                     "meta_keywords": seo.meta_keywords or "",
+#                     "meta_description": seo.meta_description or "",
+#                 }
+#             })
+#         except Exception as e:
+#             return JsonResponse({"error": str(e)}, status=500)
+#     else:
+#         return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
 @csrf_exempt
-@authenticate
-@restrict(['admin'])
-def manage_home_page_seo(request):
-    """Admin: Create/Update home page SEO meta information"""
-    if request.method in ['POST', 'PUT']:
-        try:
-            data = json.loads(request.body)
-            seo = HomePageSeo.objects(is_active=True).first()
-            if not seo:
-                seo = HomePageSeo()
-            seo.meta_title = data.get('meta_title', seo.meta_title)
-            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
-            seo.meta_description = data.get('meta_description', seo.meta_description)
-            seo.updated_at = datetime.utcnow()
-            seo.save()
-            return JsonResponse({
-                "success": True,
-                "message": "Home page SEO updated successfully",
-                "data": {
-                    "id": str(seo.id),
-                    "meta_title": seo.meta_title or "",
-                    "meta_keywords": seo.meta_keywords or "",
-                    "meta_description": seo.meta_description or "",
-                }
-            })
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-    elif request.method == 'GET':
+def get_home_page_seo(request):
+    """
+    Public endpoint: Get home page SEO meta information
+    No authentication required (READ ONLY)
+    """
+    if request.method == "GET":
         try:
             seo = HomePageSeo.objects(is_active=True).first()
+
             if not seo:
                 return JsonResponse({
                     "success": True,
@@ -2630,19 +2671,75 @@ def manage_home_page_seo(request):
                         "meta_description": "",
                     }
                 })
+
             return JsonResponse({
                 "success": True,
                 "data": {
-                    "id": str(seo.id),
                     "meta_title": seo.meta_title or "",
                     "meta_keywords": seo.meta_keywords or "",
                     "meta_description": seo.meta_description or "",
                 }
             })
+
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
-    else:
-        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_home_page_seo(request):
+
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+
+            seo = HomePageSeo.objects(is_active=True).first()
+
+            if not seo:
+                seo = HomePageSeo()
+
+            seo.meta_title = data.get("meta_title", "")
+            seo.meta_keywords = data.get("meta_keywords", "")
+            seo.meta_description = data.get("meta_description", "")
+            seo.is_active = True
+            seo.save()
+
+            return JsonResponse({"success": True})
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    elif request.method == "GET":
+        try:
+            seo = HomePageSeo.objects(is_active=True).first()
+
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": ""
+                    }
+                })
+
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or ""
+                }
+            })
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)    
+
 
 
 # =================== EXAM DETAILS SEO ===================
@@ -2757,6 +2854,31 @@ def manage_exams_page_seo(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
+def get_exams_page_seo(request):
+    if request.method == "GET":
+        try:
+            seo = ExamsPageSeo.objects(is_active=True).first()
+
+            if not seo:
+                return JsonResponse({
+                    "meta_title": "",
+                    "meta_keywords": "",
+                    "meta_description": ""
+                })
+
+            return JsonResponse({
+                "meta_title": seo.meta_title or "",
+                "meta_keywords": seo.meta_keywords or "",
+                "meta_description": seo.meta_description or "",
+            })
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+
 # =================== PRICING PLANS SEO ===================
 @csrf_exempt
 @authenticate
@@ -2811,3 +2933,20 @@ def manage_pricing_plans_seo(request):
             return JsonResponse({"error": str(e)}, status=500)
     else:
         return JsonResponse({"error": "Method not allowed"}, status=405)
+
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
+from .models import ExamsPageSEO
+
+@api_view(["GET"])
+def get_exams_page_seo(request):
+    obj = ExamsPageSEO.objects.first()
+
+    if not obj:
+        return Response({})
+
+    return Response({
+        "meta_title": obj.meta_title,
+        "meta_description": obj.meta_description,
+        "meta_keywords": obj.meta_keywords,
+    })

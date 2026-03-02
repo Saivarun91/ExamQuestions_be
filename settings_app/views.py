@@ -266,6 +266,9 @@ def get_terms_of_service(request):
         return JsonResponse({
             "success": True,
             "content": terms.content or "Terms of service content will be updated by admin.",
+            "meta_title": getattr(terms, 'meta_title', '') or '',
+            "meta_keywords": getattr(terms, 'meta_keywords', '') or '',
+            "meta_description": getattr(terms, 'meta_description', '') or '',
             "updated_at": updated_at_str
         }, status=200)
     except Exception as e:
@@ -285,19 +288,23 @@ def update_terms_of_service(request):
     try:
         body = json.loads(request.body.decode("utf-8"))
         content = body.get("content", "")
-        
+
+        print("body :", content);
         if not content:
             return JsonResponse({"success": False, "error": "Content is required"}, status=400)
         
         terms = TermsOfService.objects.first()
         if not terms:
             terms = TermsOfService()
-        
+        print("terms :", terms);
         terms.content = content
+        # print("content :", content);
+        # print("body :", body.get("meta_title", terms.meta_title or ""));
         terms.meta_title = body.get("meta_title", terms.meta_title or "")
         terms.meta_keywords = body.get("meta_keywords", terms.meta_keywords or "")
         terms.meta_description = body.get("meta_description", terms.meta_description or "")
         terms.updated_at = datetime.utcnow()
+
         terms.save()
         
         return JsonResponse({"success": True, "message": "Terms of service updated successfully"}, status=200)
@@ -371,6 +378,9 @@ def get_disclaimer(request):
         return JsonResponse({
             "success": True,
             "content": disclaimer.content,
+            "meta_title": getattr(disclaimer, 'meta_title', '') or '',
+            "meta_keywords": getattr(disclaimer, 'meta_keywords', '') or '',
+            "meta_description": getattr(disclaimer, 'meta_description', '') or '',
             "updated_at": disclaimer.updated_at.isoformat() if disclaimer.updated_at else None
         }, status=200)
     except Exception as e:
