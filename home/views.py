@@ -737,6 +737,88 @@ def manage_hero_section(request):
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from .models import SeoIntroSection
+
+
+# ================= SEO INTRO SECTION =================
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from .models import SeoIntroSection
+
+
+# ================= GET SEO INTRO =================
+@api_view(["GET"])
+def seo_intro_section(request):
+    section = SeoIntroSection.objects(is_active=True).first()
+
+    # If no record exists, create default one
+    if not section:
+        section = SeoIntroSection(
+            heading="All Exam Questions for Top Certification Exams",
+            content="Add your SEO intro content from admin panel."
+        )
+        section.save()
+
+    return Response({
+        "success": True,
+        "data": {
+            "heading": section.heading,
+            "content": section.content
+        }
+    })
+# ================= ADMIN SAVE SEO INTRO =================
+@api_view(["POST"])
+def save_seo_intro_section(request):
+    heading = request.data.get("heading")
+    content = request.data.get("content")
+
+    section = SeoIntroSection.objects().first()
+
+    if section:
+        section.heading = heading
+        section.content = content
+        section.save()
+    else:
+        section = SeoIntroSection(
+            heading=heading,
+            content=content
+        )
+        section.save()
+
+    return Response({
+        "success": True,
+        "message": "SEO Intro saved successfully"
+    })
+import datetime
+
+# @api_view(["POST"])
+# def save_seo_intro_section(request):
+#     heading = request.data.get("heading")
+#     content = request.data.get("content")
+
+#     section = SeoIntroSection.objects().first()
+
+#     if section:
+#         section.heading = heading
+#         section.content = content
+#         section.updated_at = datetime.datetime.utcnow()
+#         section.save()
+#     else:
+#         section = SeoIntroSection(
+#             heading=heading,
+#             content=content
+#         )
+#         section.save()
+
+#     return Response({
+#         "success": True,
+#         "message": "SEO Intro saved successfully"
+#     })
+
+
 
 # =================== EXAMS PAGE TRUST BAR ===================
 @csrf_exempt
@@ -1590,31 +1672,98 @@ def get_recently_updated_exams(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
+# @csrf_exempt
+# @authenticate
+# @restrict(['admin'])
+# def manage_recently_updated_exams(request):
+#     """Admin: Manage recently updated exams"""
+#     if request.method == 'GET':
+#         try:
+#             from courses.models import Course
+#             exams = Course.objects.all().order_by('-updated_at')
+#             data = []
+#             for exam in exams:
+#                 data.append({
+#                     "id": str(exam.id),
+#                     "title": exam.title,
+#                     "code": exam.code,
+#                     "provider": exam.provider,
+#                     "slug": exam.slug,
+#                     "practice_exams": exam.practice_exams or 0,
+#                     "questions": exam.questions or 0,
+#                     "badge": exam.badge or "",
+#                     "is_active": exam.is_active
+#                 })
+#             return JsonResponse({"success": True, "data": data})
+#         except Exception as e:
+#             return JsonResponse({"error": str(e)}, status=500)
+
 @csrf_exempt
 @authenticate
 @restrict(['admin'])
 def manage_recently_updated_exams(request):
     """Admin: Manage recently updated exams"""
-    if request.method == 'GET':
-        try:
-            from courses.models import Course
-            exams = Course.objects.all().order_by('-updated_at')
-            data = []
-            for exam in exams:
-                data.append({
-                    "id": str(exam.id),
-                    "title": exam.title,
-                    "code": exam.code,
-                    "provider": exam.provider,
-                    "slug": exam.slug,
-                    "practice_exams": exam.practice_exams or 0,
-                    "questions": exam.questions or 0,
-                    "badge": exam.badge or "",
-                    "is_active": exam.is_active
-                })
-            return JsonResponse({"success": True, "data": data})
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        from courses.models import Course
+        exams = Course.objects.all().order_by('-updated_at')
+
+        data = []
+        for exam in exams:
+            # Safe provider name
+            provider_name = "Unknown"
+            if exam.provider:
+                provider_name = getattr(exam.provider, 'name', str(exam.provider))
+
+            # Safe practice_tests_list
+            practice_tests_list = []
+            try:
+                practice_tests = getattr(exam, 'practice_tests', None)
+                if practice_tests:
+                    # If Django ManyToManyField
+                    try:
+                        practice_tests = practice_tests.all()
+                    except Exception:
+                        pass
+                    seen_ids = set()
+                    for pt in practice_tests:
+                        pt_id = str(getattr(pt, 'id', ''))
+                        if pt_id and pt_id not in seen_ids:
+                            seen_ids.add(pt_id)
+                            practice_tests_list.append({
+                                'id': pt_id,
+                                'slug': getattr(pt, 'slug', ''),
+                                'title': getattr(pt, 'title', ''),
+                                'description': getattr(pt, 'overview', ''),
+                                'questions': getattr(pt, 'questions', 0),
+                                'difficulty': getattr(pt, 'difficulty_level', 'Intermediate'),
+                                'duration': str(getattr(pt, 'duration', 0)),
+                            })
+            except Exception:
+                # fallback
+                practice_tests_list = getattr(exam, 'practice_tests_list', [])
+
+            data.append({
+                "id": str(exam.id),
+                "title": exam.title,
+                "code": exam.code,
+                "provider": provider_name,
+                "slug": exam.slug,
+                "practice_exams": exam.practice_exams or 0,
+                "questions": exam.questions or 0,
+                "practice_tests_list": practice_tests_list,
+                "badge": exam.badge or "",
+                "is_active": exam.is_active,
+                "updated_at": exam.updated_at.strftime("%Y-%m-%d %H:%M:%S") if exam.updated_at else None
+            })
+
+        return JsonResponse({"success": True, "data": data})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({"error": str(e)}, status=500)
 
 
 @csrf_exempt

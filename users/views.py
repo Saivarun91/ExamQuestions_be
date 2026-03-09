@@ -1,5 +1,3 @@
-
-from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
@@ -25,6 +23,9 @@ import urllib.request
 import urllib.parse
 import json
 import requests
+
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 
 
 # ================= JWT HELPER =================
@@ -142,7 +143,8 @@ def register_user(request):
         user.save()
         
         # ✅ Generate JWT token (use consistent key "id")
-        token = generate_jwt({"id": str(user.id), "email": user.email, "role": user.role})
+        # token = generate_jwt({"id": str(user.id), "email": user.email, "role": user.role})
+        token = generate_jwt({"id": str(user.id), "role": user.role})
 
         return Response(
             {
@@ -410,11 +412,6 @@ from .models import Admin
 SECRET_KEY = settings.SECRET_KEY
 
 
-# ------------------ JWT Helper ------------------
-def generate_jwt(payload):
-    """Generate JWT with 7 days expiry."""
-    payload["exp"] = datetime.utcnow() + timedelta(days=7)
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 
 # ------------------ Admin Register ------------------
@@ -905,6 +902,17 @@ def reset_password(request):
             )
 
         # Update password
+        # user.set_password(new_password)
+        # user.save()
+
+        try:
+            validate_password(new_password, user=user)
+        except ValidationError as e:
+            return Response(
+                {"error": list(e.messages)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         user.set_password(new_password)
         user.save()
 
@@ -953,7 +961,6 @@ def google_oauth(request):
 
         # Check if user exists
         user = User.objects(email=email).first()
-
         if user:
             # User exists, login
             token = generate_jwt({"id": str(user.id), "role": user.role})
@@ -979,8 +986,8 @@ def google_oauth(request):
                 phone_number="N/A",
                 role="student"
             )
-            # Set a random password (user won't need it for Google login)
-            user.set_password("".join(random.choices(string.ascii_letters + string.digits, k=32)))
+            # ✅ Instead of setting random password
+            user.set_unusable_password()
             user.save()
 
             token = generate_jwt({"id": str(user.id), "role": user.role})
@@ -998,6 +1005,51 @@ def google_oauth(request):
                 },
                 status=status.HTTP_201_CREATED,
             )
+
+        # if user:
+        #     # User exists, login
+        #     token = generate_jwt({"id": str(user.id), "role": user.role})
+        #     return Response(
+        #         {
+        #             "success": True,
+        #             "message": "Login successful",
+        #             "token": token,
+        #             "user": {
+        #                 "id": str(user.id),
+        #                 "fullname": user.fullname,
+        #                 "email": user.email,
+        #                 "role": user.role,
+        #             },
+        #         },
+        #         status=status.HTTP_200_OK,
+        #     )
+        # else:
+        #     # New user, create account
+        #     user = User(
+        #         fullname=name if name else "Google User",
+        #         email=email,
+        #         phone_number="N/A",
+        #         role="student"
+        #     )
+        #     # Set a random password (user won't need it for Google login)
+        #     user.set_password("".join(random.choices(string.ascii_letters + string.digits, k=32)))
+        #     user.save()
+
+        #     token = generate_jwt({"id": str(user.id), "role": user.role})
+        #     return Response(
+        #         {
+        #             "success": True,
+        #             "message": "Account created and logged in successfully",
+        #             "token": token,
+        #             "user": {
+        #                 "id": str(user.id),
+        #                 "fullname": user.fullname,
+        #                 "email": user.email,
+        #                 "role": user.role,
+        #             },
+        #         },
+        #         status=status.HTTP_201_CREATED,
+        #     )
     except Exception as e:
         return Response(
             {"error": str(e)},
@@ -1084,3 +1136,4 @@ def search_users_by_email(request):
             {"success": False, "error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+

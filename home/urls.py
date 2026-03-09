@@ -3,6 +3,8 @@ from . import views
 
 urlpatterns = [
     # Public APIs - Home Page Sections
+    path('seo-intro/', views.seo_intro_section, name='seo_intro_section'),
+    path('seo-intro/save/', views.save_seo_intro_section,name='save_seo_intro_section'),
     path('hero/', views.get_hero_section, name='get_hero_section'),
     path('value-propositions-section/', views.get_value_propositions_section, name='get_value_propositions_section'),
     path('value-propositions/', views.get_value_propositions, name='get_value_propositions'),

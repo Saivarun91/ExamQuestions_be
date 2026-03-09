@@ -134,3 +134,9 @@ def get_analytics(request):
             "message": "Failed to fetch analytics data"
         }, status=500)
 
+
+
+
+
+
+

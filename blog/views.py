@@ -118,44 +118,44 @@ def update_blog(request, blog_id):
 # ---------------------------
 # UPDATE BLOG
 # ---------------------------
-@csrf_exempt
-def update_blog(request, blog_id):
-    if request.method != "PUT":
-        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
-    try:
-        blog = Blog.objects.get(id=blog_id)
-        data = json.loads(request.body)
+# @csrf_exempt
+# def update_blog(request, blog_id):
+#     if request.method != "PUT":
+#         return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+#     try:
+#         blog = Blog.objects.get(id=blog_id)
+#         data = json.loads(request.body)
 
-        field_map = {
-            "title": "title",
-            "excerpt": "excerpt",
-            "category": "category",
-            "author": "author",
-            "date": "date",
-            "readTime": "read_time",
-            "image_url": "image_url",
-            "image": "image_url",
-            "meta_title": "meta_title",
-            "meta_description": "meta_description",
-            "meta_keywords": "meta_keywords",
-        }
+#         field_map = {
+#             "title": "title",
+#             "excerpt": "excerpt",
+#             "category": "category",
+#             "author": "author",
+#             "date": "date",
+#             "readTime": "read_time",
+#             "image_url": "image_url",
+#             "image": "image_url",
+#             "meta_title": "meta_title",
+#             "meta_description": "meta_description",
+#             "meta_keywords": "meta_keywords",
+#         }
 
-        for frontend_field, model_field in field_map.items():
-            if frontend_field in data:
-                value = data[frontend_field]
-                if model_field == "date" and value:
-                    try:
-                        value = datetime.strptime(value, "%Y-%m-%d")
-                    except:
-                        pass
-                setattr(blog, model_field, value)
+#         for frontend_field, model_field in field_map.items():
+#             if frontend_field in data:
+#                 value = data[frontend_field]
+#                 if model_field == "date" and value:
+#                     try:
+#                         value = datetime.strptime(value, "%Y-%m-%d")
+#                     except:
+#                         pass
+#                 setattr(blog, model_field, value)
 
-        blog.save()
-        return JsonResponse({"success": True, "message": "Blog updated successfully"}, status=200)
-    except Blog.DoesNotExist:
-        return JsonResponse({"success": False, "message": "Blog not found"}, status=404)
-    except Exception as e:
-        return JsonResponse({"success": False, "message": str(e)}, status=400)
+#         blog.save()
+#         return JsonResponse({"success": True, "message": "Blog updated successfully"}, status=200)
+#     except Blog.DoesNotExist:
+#         return JsonResponse({"success": False, "message": "Blog not found"}, status=404)
+#     except Exception as e:
+#         return JsonResponse({"success": False, "message": str(e)}, status=400)
 
 
 # ---------------------------
@@ -172,4 +172,4 @@ def delete_blog(request, blog_id):
     except Blog.DoesNotExist:
         return JsonResponse({"success": False, "message": "Blog not found"}, status=404)
     except Exception as e:
-        return JsonResponse({"success": False, "message": str(e)}, status=500)
+        return JsonResponse({"success": False, "message": str(e)}, status=500)       

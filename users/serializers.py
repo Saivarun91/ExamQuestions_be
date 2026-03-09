@@ -14,8 +14,59 @@
 
 
 
+# from rest_framework import serializers
+# from .models import User, Admin
+
+# # ---------------- User Serializer ----------------
+# class UserSerializer(serializers.Serializer):
+#     fullname = serializers.CharField()
+#     email = serializers.EmailField()
+#     phone_number = serializers.CharField()
+#     role = serializers.ChoiceField(choices=['student', 'admin'])
+#     location = serializers.CharField(allow_blank=True, required=False)
+#     password = serializers.CharField(write_only=True)
+#     confirm_password = serializers.CharField(write_only=True)  # ✅ Added here
+
+#     def validate(self, data):
+#         if data['password'] != data['confirm_password']:
+#             raise serializers.ValidationError("Passwords do not match")
+#         return data
+
+#     def create(self, validated_data):
+#         validated_data.pop('confirm_password')  # remove before saving
+#         user = User(**validated_data)
+#         user.set_password(validated_data['password'])
+#         user.save()
+#         return user
+
+# # ---------------- Admin Serializer ----------------
+# class AdminSerializer(serializers.Serializer):
+#     name = serializers.CharField()
+#     email = serializers.EmailField()
+#     password = serializers.CharField(write_only=True)
+#     confirm_password = serializers.CharField(write_only=True)  # ✅ Added here
+
+#     def validate(self, data):
+#         if data['password'] != data['confirm_password']:
+#             raise serializers.ValidationError("Passwords do not match")
+#         return data
+
+#     def create(self, validated_data):
+#         validated_data.pop('confirm_password')  # remove before saving
+#         admin = Admin(**validated_data)
+#         admin.set_password(validated_data['password'])
+#         admin.save()
+#         return admin
+
+
+
+
 from rest_framework import serializers
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+
 from .models import User, Admin
+
 
 # ---------------- User Serializer ----------------
 class UserSerializer(serializers.Serializer):
@@ -25,18 +76,29 @@ class UserSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=['student', 'admin'])
     location = serializers.CharField(allow_blank=True, required=False)
     password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True)  # ✅ Added here
+    confirm_password = serializers.CharField(write_only=True)
 
     def validate(self, data):
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError("Passwords do not match")
+
+        # ✅ Validate password strength
+        try:
+            validate_password(data['password'])
+        except ValidationError as e:
+            raise serializers.ValidationError({"password": list(e.messages)})
+
         return data
 
     def create(self, validated_data):
-        validated_data.pop('confirm_password')  # remove before saving
+        validated_data.pop('confirm_password')
+
+        password = validated_data.pop('password')
+
         user = User(**validated_data)
-        user.set_password(validated_data['password'])
+        user.set_password(password)
         user.save()
+
         return user
 
 # ---------------- Admin Serializer ----------------
@@ -44,16 +106,27 @@ class AdminSerializer(serializers.Serializer):
     name = serializers.CharField()
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True)  # ✅ Added here
+    confirm_password = serializers.CharField(write_only=True)
 
     def validate(self, data):
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError("Passwords do not match")
+
+        # ✅ Password validation
+        try:
+            validate_password(data['password'])
+        except ValidationError as e:
+            raise serializers.ValidationError({"password": list(e.messages)})
+
         return data
 
     def create(self, validated_data):
-        validated_data.pop('confirm_password')  # remove before saving
+        validated_data.pop('confirm_password')
+
+        password = validated_data.pop('password')
+
         admin = Admin(**validated_data)
-        admin.set_password(validated_data['password'])
+        admin.set_password(password)
         admin.save()
+
         return admin

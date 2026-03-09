@@ -73,6 +73,24 @@ class ExamsPageAbout(Document):
         "strict": False
     }
 
+# =================== SEO INTRO SECTION ===================
+class SeoIntroSection(Document):
+    heading = StringField(default="All Exam Questions for Top Certification Exams")
+    content = StringField()  # 200-300 word SEO paragraph
+
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "seo_intro_section",
+        "strict": False
+    }
+
+    def __str__(self):
+        return self.heading
+
 
 # =================== VALUE PROPOSITIONS SECTION ===================
 class ValuePropositionsSection(Document):
