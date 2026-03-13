@@ -186,6 +186,7 @@ class RecentlyUpdatedSection(Document):
 class FAQsSection(Document):
     heading = StringField(default="Frequently Asked Questions")
     subtitle = StringField(default="Find answers to common questions")
+    content = StringField() 
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
     updated_at = DateTimeField(default=datetime.datetime.utcnow)

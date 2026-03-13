@@ -629,12 +629,13 @@ from common.middleware import authenticate, restrict
 from bson import ObjectId
 import json
 from datetime import datetime
+# from django.utils import timezone
 
 
 from django.http import JsonResponse
 
 
-from django.http import JsonResponse
+
 
 
 
@@ -792,7 +793,7 @@ def save_seo_intro_section(request):
         "success": True,
         "message": "SEO Intro saved successfully"
     })
-import datetime
+
 
 # @api_view(["POST"])
 # def save_seo_intro_section(request):
@@ -1084,7 +1085,8 @@ def manage_value_propositions(request):
             prop.description = data.get('description', prop.description)
             prop.order = data.get('order', prop.order)
             prop.is_active = data.get('is_active', prop.is_active)
-            prop.updated_at = datetime.utcnow()
+            # prop.updated_at = datetime.utcnow()
+            prop.updated_at = timezone.now()
             prop.save()
 
             return JsonResponse({
@@ -1130,7 +1132,7 @@ def manage_value_proposition_by_id(request, proposition_id):
             prop.description = data.get('description', prop.description)
             prop.order = data.get('order', prop.order)
             prop.is_active = data.get('is_active', prop.is_active)
-            prop.updated_at = datetime.utcnow()
+            prop.updated_at = timezone.now()
             prop.save()
             
             return JsonResponse({
@@ -1177,7 +1179,9 @@ def manage_value_propositions_section(request):
             section.meta_title = data.get('meta_title', section.meta_title)
             section.meta_keywords = data.get('meta_keywords', section.meta_keywords)
             section.meta_description = data.get('meta_description', section.meta_description)
-            section.updated_at = datetime.utcnow()
+            # section.updated_at = datetime.utcnow()
+            section.updated_at = timezone.now()
+
             section.save()
 
             return JsonResponse({
@@ -1812,6 +1816,30 @@ def manage_recently_updated_exam_by_id(request, exam_id):
 
 
 # =================== FAQS ===================
+# @csrf_exempt
+# def get_faqs(request):
+#     """Get all active FAQs"""
+#     if request.method != 'GET':
+#         return JsonResponse({"error": "Method not allowed"}, status=405)
+
+#     try:
+#         faqs = FAQ.objects(is_active=True).order_by('order')
+#         data = []
+        
+
+#         for faq in faqs:
+#             data.append({
+#                 "id": str(faq.id),
+#                 "question": faq.question,
+#                 "answer": faq.answer,
+#                 "category": faq.category or "General",
+#                 "order": faq.order or 0
+#             })
+
+#         return JsonResponse({"success": True, "data": data})
+#     except Exception as e:
+#         return JsonResponse({"error": str(e)}, status=500)
+
 @csrf_exempt
 def get_faqs(request):
     """Get all active FAQs"""
@@ -1820,8 +1848,14 @@ def get_faqs(request):
 
     try:
         faqs = FAQ.objects(is_active=True).order_by('order')
+
         data = []
-        for faq in faqs:
+        section = FAQsSection.objects(is_active=True).first()
+        print("Section faq content : ",section)
+        content = (section.content or "") if section else ""
+
+        for i, faq in enumerate(faqs):
+
             data.append({
                 "id": str(faq.id),
                 "question": faq.question,
@@ -1830,50 +1864,111 @@ def get_faqs(request):
                 "order": faq.order or 0
             })
 
-        return JsonResponse({"success": True, "data": data})
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({
+            "success": True,
+            "content": content,   # ✅ NEW
+            "data": data
+        })
 
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 @authenticate
 @restrict(['admin'])
 def manage_faqs(request):
-    """Admin: Manage FAQs"""
-    if request.method == 'GET':
-        try:
+    """
+    Admin: manage FAQs list.
+
+    - GET: return FAQs section settings + all FAQs (ordered)
+    - POST: create a new FAQ, then return section + all FAQs
+    """
+    try:
+        # Section info (so admin can see heading/subtitle/content together with FAQs)
+        faq_section = FAQsSection.objects.first()
+        if not faq_section:
+            faq_section = FAQsSection()
+            faq_section.save()
+
+        if request.method == "GET":
+            # Fetch all FAQs ordered by 'order'
             faqs = FAQ.objects.all().order_by('order')
-            data = []
+            faqs_list = []
             for faq in faqs:
-                data.append({
+                faqs_list.append({
                     "id": str(faq.id),
                     "question": faq.question,
                     "answer": faq.answer,
-                    "order": faq.order or 0,
-                    "is_active": faq.is_active
+                    "order": faq.order,
+                    "category": faq.category,
+                    "is_active": faq.is_active,
+                    "created_at": faq.created_at,
+                    "updated_at": faq.updated_at
                 })
-            return JsonResponse({"success": True, "data": data})
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-    
-    elif request.method == 'POST':
-        try:
+
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "section": {
+                        "heading": faq_section.heading,
+                        "subtitle": faq_section.subtitle,
+                        "content": faq_section.content,
+                        "is_active": faq_section.is_active
+                    },
+                    "faqs": faqs_list
+                }
+            })
+        elif request.method == "POST":
+            # Create a new FAQ
             data = json.loads(request.body)
+            print("content sent : ",data.get("content"))
+            faq_section.heading = data.get("heading", faq_section.heading)
+            faq_section.subtitle = data.get("subtitle", faq_section.subtitle)
+            faq_section.content = data.get("content", faq_section.content)
+            faq_section.is_active = data.get("is_active", faq_section.is_active)
+            faq_section.updated_at = datetime.utcnow()
+            faq_section.save()
             faq = FAQ()
-            faq.question = data.get('question', '')
-            faq.answer = data.get('answer', '')
-            faq.order = data.get('order', 0)
-            faq.is_active = data.get('is_active', True)
+            faq.question = data.get("question", "").strip()
+            faq.answer = data.get("answer", "").strip()
+            faq.order = data.get("order", 0)
+            faq.is_active = data.get("is_active", True)
+            faq.created_at = datetime.utcnow()
+            faq.updated_at = datetime.utcnow()
             faq.save()
-            
+
+            # Return updated list + section, same shape as GET
+            faqs = FAQ.objects.all().order_by("order")
+            faqs_data = []
+            for item in faqs:
+                faqs_data.append({
+                    "id": str(item.id),
+                    "question": item.question,
+                    "answer": item.answer,
+                    "category": getattr(item, "category", None) or "General",
+                    "order": item.order or 0,
+                    "is_active": item.is_active,
+                })
+
             return JsonResponse({
                 "success": True,
                 "message": "FAQ created successfully",
-                "data": {"id": str(faq.id)}
+                "data": {
+                    "section": {
+                        "heading": faq_section.heading,
+                        "subtitle": faq_section.subtitle,
+                        "content": faq_section.content,
+                        "is_active": faq_section.is_active,
+                    },
+                    "faqs": faqs_data,
+                },
             })
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
 
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 @authenticate
@@ -1884,7 +1979,10 @@ def manage_faq_by_id(request, faq_id):
         if not ObjectId.is_valid(faq_id):
             return JsonResponse({"error": "Invalid FAQ ID"}, status=400)
         
-        faq = FAQ.objects.get(id=ObjectId(faq_id))
+        # faq = FAQ.objects.get(id=ObjectId(faq_id))
+        faq = FAQ.objects.filter(id=ObjectId(faq_id)).first()
+        if not faq:
+            return JsonResponse({"error": "FAQ not found"}, status=404)
         
         if request.method == 'PUT':
             data = json.loads(request.body)
@@ -2365,7 +2463,8 @@ def get_faqs_section(request):
                 "success": True,
                 "data": {
                     "heading": "Frequently Asked Questions",
-                    "subtitle": "Find answers to common questions"
+                    "subtitle": "Find answers to common questions",
+                    "content": ""
                 }
             })
         return JsonResponse({
@@ -2373,7 +2472,8 @@ def get_faqs_section(request):
             "data": {
                 "id": str(section.id),
                 "heading": section.heading,
-                "subtitle": section.subtitle
+                "subtitle": section.subtitle,
+                "content": getattr(section, "content", "") or ""
             }
         })
     except Exception as e:
@@ -2711,6 +2811,7 @@ def manage_faqs_section(request):
                 section = FAQsSection()
             section.heading = data.get('heading', section.heading)
             section.subtitle = data.get('subtitle', section.subtitle)
+            section.content =data.get("content",section.content)
             section.updated_at = datetime.utcnow()
             section.save()
             return JsonResponse({
@@ -2728,7 +2829,8 @@ def manage_faqs_section(request):
                     "success": True,
                     "data": {
                         "heading": "Frequently Asked Questions",
-                        "subtitle": "Find answers to common questions"
+                        "subtitle": "Find answers to common questions",
+                        "content": ""
                     }
                 })
             return JsonResponse({
@@ -2736,7 +2838,8 @@ def manage_faqs_section(request):
                 "data": {
                     "id": str(section.id),
                     "heading": section.heading,
-                    "subtitle": section.subtitle
+                    "subtitle": section.subtitle,
+                    "content": getattr(section, "content", "") or ""
                 }
             })
         except Exception as e:
