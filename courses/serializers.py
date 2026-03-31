@@ -127,6 +127,13 @@ class CourseSerializer(serializers.Serializer):
             'short_description': getattr(instance, 'short_description', None),
             'about': getattr(instance, 'about', None),
             'about_heading': getattr(instance, 'about_heading', None),
+            'exam_details_heading': getattr(instance, 'exam_details_heading', None),
+            'exam_details': getattr(instance, 'exam_details', None),
+            'details': (
+                getattr(instance, 'details', None)
+                if getattr(instance, 'details', None) is not None
+                else getattr(instance, 'exam_details', None)
+            ),
             'why_matters_heading': getattr(instance, 'why_matters_heading', None),
             'whats_included_heading': getattr(instance, 'whats_included_heading', None),
             'topics_heading': getattr(instance, 'topics_heading', None),
@@ -134,6 +141,10 @@ class CourseSerializer(serializers.Serializer):
             'testimonials_heading': getattr(instance, 'testimonials_heading', None),
             'faqs_heading': getattr(instance, 'faqs_heading', None),
             'test_instructions_heading': getattr(instance, 'test_instructions_heading', None),
+            'practice_page_section_1_heading': getattr(instance, 'practice_page_section_1_heading', None),
+            'practice_page_section_1_content': getattr(instance, 'practice_page_section_1_content', None),
+            'practice_page_section_2_heading': getattr(instance, 'practice_page_section_2_heading', None),
+            'practice_page_section_2_content': getattr(instance, 'practice_page_section_2_content', None),
             'eligibility': getattr(instance, 'eligibility', None),
             'exam_pattern': getattr(instance, 'exam_pattern', None),
             'pass_rate': getattr(instance, 'pass_rate', None),

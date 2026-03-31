@@ -11,6 +11,10 @@ urlpatterns = [
     # Pricing Management APIs
     path('admin/<str:course_id>/pricing/', views.manage_course_pricing, name='manage_course_pricing'),
 
+    # Single course GET (must stay after list/create/update/delete/pricing so paths are unambiguous)
+    path('admin/<str:course_id>/detail/', views.admin_course_detail, name='admin_course_detail_nested'),
+    path('admin/<str:course_id>/', views.admin_course_detail, name='admin_course_detail'),
+
     # Public APIs
     # Pricing endpoints - place at top to ensure they're matched first (before catch-all patterns)
     path('pricing/<str:provider>/<str:exam_code>/', views.get_pricing_by_slug, name='get_pricing_by_slug'),

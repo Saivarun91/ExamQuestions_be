@@ -160,6 +160,9 @@ class TestimonialsSection(Document):
 class BlogPostsSection(Document):
     heading = StringField(default="Latest Blog Posts")
     subtitle = StringField(default="Stay updated with certification tips and news")
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
     updated_at = DateTimeField(default=datetime.datetime.utcnow)
@@ -193,6 +196,19 @@ class FAQsSection(Document):
 
     meta = {
         "collection": "faqs_section",
+        "strict": False
+    }
+
+
+class SectionContent(Document):
+    heading = StringField(default="Section Content")
+    content = StringField()
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "section_content",
         "strict": False
     }
 
@@ -403,7 +419,8 @@ class ExamsPageSeo(Document):
     meta_title = StringField()
     meta_keywords = StringField()
     meta_description = StringField()
-    
+    page_h1 = StringField(default="All Popular Exams")
+
     # System
     is_active = BooleanField(default=True)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
@@ -416,6 +433,46 @@ class ExamsPageSeo(Document):
 
     def __str__(self):
         return f"Exams Page SEO - {self.meta_title or 'Untitled'}"
+
+
+# =================== PROVIDERS PAGE SEO ===================
+class ProvidersPageSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "providers_page_seo",
+        "strict": False
+    }
+
+    def __str__(self):
+        return f"Providers Page SEO - {self.meta_title or 'Untitled'}"
+
+
+# =================== CATEGORIES PAGE SEO ===================
+class CategoriesPageSeo(Document):
+    meta_title = StringField()
+    meta_keywords = StringField()
+    meta_description = StringField()
+
+    # System
+    is_active = BooleanField(default=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    meta = {
+        "collection": "categories_page_seo",
+        "strict": False,
+    }
+
+    def __str__(self):
+        return f"Categories Page SEO - {self.meta_title or 'Untitled'}"
 
 
 # =================== PRICING PLANS SEO ===================

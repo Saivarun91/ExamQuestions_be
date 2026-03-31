@@ -622,8 +622,8 @@ from .models import (
     EmailSubscribeSection, EmailSubscriber, TopCategoriesSection,
     ExamsPageTrustBar, ExamsPageAbout, PricingPlansSeo,
     FeaturedExamsSection, PopularProvidersSection, TestimonialsSection,
-    BlogPostsSection, RecentlyUpdatedSection, FAQsSection,
-    HomePageSeo, ExamDetailsSeo, ExamsPageSeo
+    BlogPostsSection, RecentlyUpdatedSection, FAQsSection, SectionContent,
+    HomePageSeo, ExamDetailsSeo, ExamsPageSeo, ProvidersPageSeo, CategoriesPageSeo
 )
 from common.middleware import authenticate, restrict
 from bson import ObjectId
@@ -776,18 +776,24 @@ def save_seo_intro_section(request):
     heading = request.data.get("heading")
     content = request.data.get("content")
 
-    section = SeoIntroSection.objects().first()
+    # Must use the same query as GET (seo_intro_section) or updates can hit a different document.
+    section = SeoIntroSection.objects(is_active=True).first()
 
-    if section:
-        section.heading = heading
-        section.content = content
-        section.save()
-    else:
+    if not section:
         section = SeoIntroSection(
-            heading=heading,
-            content=content
+            heading=heading or "All Exam Questions for Top Certification Exams",
+            content=content or "",
+            is_active=True,
         )
-        section.save()
+    else:
+        if heading is not None:
+            section.heading = heading
+        if content is not None:
+            section.content = content
+        section.is_active = True
+
+    section.updated_at = datetime.utcnow()
+    section.save()
 
     return Response({
         "success": True,
@@ -1435,9 +1441,9 @@ def get_blog_post_by_slug(request, slug):
 
     try:
         from urllib.parse import unquote
-        slug = unquote(slug).lower().strip()
-        
-        post = BlogPost.objects(slug=slug, is_active=True).first()
+        slug = unquote(slug).strip()
+        # Case-insensitive match: stored slug may differ in casing from URL / listing payload
+        post = BlogPost.objects(slug__iexact=slug, is_active=True).first()
         if not post:
             return JsonResponse({"error": "Blog post not found"}, status=404)
         
@@ -2407,7 +2413,10 @@ def get_blog_posts_section(request):
                 "success": True,
                 "data": {
                     "heading": "Latest Blog Posts",
-                    "subtitle": "Stay updated with certification tips and news"
+                    "subtitle": "Stay updated with certification tips and news",
+                    "meta_title": "",
+                    "meta_keywords": "",
+                    "meta_description": ""
                 }
             })
         return JsonResponse({
@@ -2415,7 +2424,10 @@ def get_blog_posts_section(request):
             "data": {
                 "id": str(section.id),
                 "heading": section.heading,
-                "subtitle": section.subtitle
+                "subtitle": section.subtitle,
+                "meta_title": getattr(section, "meta_title", "") or "",
+                "meta_keywords": getattr(section, "meta_keywords", "") or "",
+                "meta_description": getattr(section, "meta_description", "") or ""
             }
         })
     except Exception as e:
@@ -2474,6 +2486,38 @@ def get_faqs_section(request):
                 "heading": section.heading,
                 "subtitle": section.subtitle,
                 "content": getattr(section, "content", "") or ""
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+def get_section_content(request):
+    """Get independent section content settings"""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        section_content = SectionContent.objects(is_active=True).first()
+
+        # Backward-compatible fallback to existing FAQsSection data
+        if not section_content:
+            faq_section = FAQsSection.objects(is_active=True).first()
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "heading": (faq_section.heading if faq_section else "Section Content"),
+                    "content": (getattr(faq_section, "content", "") if faq_section else "") or ""
+                }
+            })
+
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "id": str(section_content.id),
+                "heading": section_content.heading,
+                "content": section_content.content or ""
             }
         })
     except Exception as e:
@@ -2715,6 +2759,9 @@ def manage_blog_posts_section(request):
                 section = BlogPostsSection()
             section.heading = data.get('heading', section.heading)
             section.subtitle = data.get('subtitle', section.subtitle)
+            section.meta_title = data.get('meta_title', getattr(section, "meta_title", ""))
+            section.meta_keywords = data.get('meta_keywords', getattr(section, "meta_keywords", ""))
+            section.meta_description = data.get('meta_description', getattr(section, "meta_description", ""))
             section.updated_at = datetime.utcnow()
             section.save()
             return JsonResponse({
@@ -2732,7 +2779,10 @@ def manage_blog_posts_section(request):
                     "success": True,
                     "data": {
                         "heading": "Latest Blog Posts",
-                        "subtitle": "Stay updated with certification tips and news"
+                        "subtitle": "Stay updated with certification tips and news",
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": ""
                     }
                 })
             return JsonResponse({
@@ -2740,7 +2790,10 @@ def manage_blog_posts_section(request):
                 "data": {
                     "id": str(section.id),
                     "heading": section.heading,
-                    "subtitle": section.subtitle
+                    "subtitle": section.subtitle,
+                    "meta_title": getattr(section, "meta_title", "") or "",
+                    "meta_keywords": getattr(section, "meta_keywords", "") or "",
+                    "meta_description": getattr(section, "meta_description", "") or ""
                 }
             })
         except Exception as e:
@@ -2840,6 +2893,55 @@ def manage_faqs_section(request):
                     "heading": section.heading,
                     "subtitle": section.subtitle,
                     "content": getattr(section, "content", "") or ""
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_section_content(request):
+    """Admin: Create/Update independent section content settings"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            section_content = SectionContent.objects(is_active=True).first()
+            if not section_content:
+                section_content = SectionContent()
+
+            section_content.heading = data.get('heading', section_content.heading)
+            section_content.content = data.get('content', section_content.content)
+            section_content.updated_at = datetime.utcnow()
+            section_content.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Section content updated successfully",
+                "data": {"id": str(section_content.id)}
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            section_content = SectionContent.objects(is_active=True).first()
+            if not section_content:
+                faq_section = FAQsSection.objects(is_active=True).first()
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "heading": (faq_section.heading if faq_section else "Section Content"),
+                        "content": (getattr(faq_section, "content", "") if faq_section else "") or ""
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(section_content.id),
+                    "heading": section_content.heading,
+                    "content": section_content.content or ""
                 }
             })
         except Exception as e:
@@ -3065,11 +3167,97 @@ def manage_exams_page_seo(request):
             seo.meta_title = data.get('meta_title', seo.meta_title)
             seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
             seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.page_h1 = data.get('page_h1', getattr(seo, 'page_h1', "All Popular Exams"))
             seo.updated_at = datetime.utcnow()
             seo.save()
             return JsonResponse({
                 "success": True,
                 "message": "Exams page SEO updated successfully",
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                    "page_h1": getattr(seo, 'page_h1', "All Popular Exams"),
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    elif request.method == 'GET':
+        try:
+            seo = ExamsPageSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse({
+                    "success": True,
+                    "data": {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                        "page_h1": "All Popular Exams",
+                    }
+                })
+            return JsonResponse({
+                "success": True,
+                "data": {
+                    "id": str(seo.id),
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                    "page_h1": getattr(seo, 'page_h1', "All Popular Exams"),
+                }
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+def get_exams_page_seo(request):
+    if request.method == "GET":
+        try:
+            seo = ExamsPageSeo.objects(is_active=True).first()
+
+            if not seo:
+                return JsonResponse({
+                    "meta_title": "",
+                    "meta_keywords": "",
+                    "meta_description": "",
+                    "page_h1": "All Popular Exams",
+                })
+
+            return JsonResponse({
+                "meta_title": seo.meta_title or "",
+                "meta_keywords": seo.meta_keywords or "",
+                "meta_description": seo.meta_description or "",
+                "page_h1": getattr(seo, 'page_h1', "All Popular Exams"),
+            })
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# =================== PROVIDERS PAGE SEO ===================
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def manage_providers_page_seo(request):
+    """Admin: Create/Update providers page SEO meta information"""
+    if request.method in ['POST', 'PUT']:
+        try:
+            data = json.loads(request.body)
+            seo = ProvidersPageSeo.objects(is_active=True).first()
+            if not seo:
+                seo = ProvidersPageSeo()
+            seo.meta_title = data.get('meta_title', seo.meta_title)
+            seo.meta_keywords = data.get('meta_keywords', seo.meta_keywords)
+            seo.meta_description = data.get('meta_description', seo.meta_description)
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+            return JsonResponse({
+                "success": True,
+                "message": "Providers page SEO updated successfully",
                 "data": {
                     "id": str(seo.id),
                     "meta_title": seo.meta_title or "",
@@ -3081,7 +3269,7 @@ def manage_exams_page_seo(request):
             return JsonResponse({"error": str(e)}, status=500)
     elif request.method == 'GET':
         try:
-            seo = ExamsPageSeo.objects(is_active=True).first()
+            seo = ProvidersPageSeo.objects(is_active=True).first()
             if not seo:
                 return JsonResponse({
                     "success": True,
@@ -3106,16 +3294,17 @@ def manage_exams_page_seo(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
-def get_exams_page_seo(request):
+def get_providers_page_seo(request):
+    """Public endpoint: Get providers page SEO meta information"""
     if request.method == "GET":
         try:
-            seo = ExamsPageSeo.objects(is_active=True).first()
+            seo = ProvidersPageSeo.objects(is_active=True).first()
 
             if not seo:
                 return JsonResponse({
                     "meta_title": "",
                     "meta_keywords": "",
-                    "meta_description": ""
+                    "meta_description": "",
                 })
 
             return JsonResponse({
@@ -3129,6 +3318,99 @@ def get_exams_page_seo(request):
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
+
+
+# =================== CATEGORIES PAGE SEO ===================
+@csrf_exempt
+def manage_categories_page_seo(request):
+    """Admin: Create/Update categories page SEO meta information"""
+    if request.method in ["POST", "PUT"]:
+        try:
+            data = json.loads(request.body)
+            seo = CategoriesPageSeo.objects(is_active=True).first()
+            if not seo:
+                seo = CategoriesPageSeo()
+
+            seo.meta_title = data.get("meta_title", seo.meta_title)
+            seo.meta_keywords = data.get("meta_keywords", seo.meta_keywords)
+            seo.meta_description = data.get(
+                "meta_description", seo.meta_description
+            )
+            seo.updated_at = datetime.utcnow()
+            seo.save()
+
+            return JsonResponse(
+                {
+                    "success": True,
+                    "message": "Categories page SEO updated successfully",
+                    "data": {
+                        "id": str(seo.id),
+                        "meta_title": seo.meta_title or "",
+                        "meta_keywords": seo.meta_keywords or "",
+                        "meta_description": seo.meta_description or "",
+                    },
+                }
+            )
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    if request.method == "GET":
+        try:
+            seo = CategoriesPageSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "meta_title": "",
+                            "meta_keywords": "",
+                            "meta_description": "",
+                        },
+                    }
+                )
+
+            return JsonResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "id": str(seo.id),
+                        "meta_title": seo.meta_title or "",
+                        "meta_keywords": seo.meta_keywords or "",
+                        "meta_description": seo.meta_description or "",
+                    },
+                }
+            )
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+def get_categories_page_seo(request):
+    """Public endpoint: Get categories page SEO meta information"""
+    if request.method == "GET":
+        try:
+            seo = CategoriesPageSeo.objects(is_active=True).first()
+            if not seo:
+                return JsonResponse(
+                    {
+                        "meta_title": "",
+                        "meta_keywords": "",
+                        "meta_description": "",
+                    }
+                )
+
+            return JsonResponse(
+                {
+                    "meta_title": seo.meta_title or "",
+                    "meta_keywords": seo.meta_keywords or "",
+                    "meta_description": seo.meta_description or "",
+                }
+            )
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
 # =================== PRICING PLANS SEO ===================
@@ -3185,20 +3467,3 @@ def manage_pricing_plans_seo(request):
             return JsonResponse({"error": str(e)}, status=500)
     else:
         return JsonResponse({"error": "Method not allowed"}, status=405)
-
-from rest_framework.response import Response
-from rest_framework.decorators import api_view
-from .models import ExamsPageSEO
-
-@api_view(["GET"])
-def get_exams_page_seo(request):
-    obj = ExamsPageSEO.objects.first()
-
-    if not obj:
-        return Response({})
-
-    return Response({
-        "meta_title": obj.meta_title,
-        "meta_description": obj.meta_description,
-        "meta_keywords": obj.meta_keywords,
-    })

@@ -15,6 +15,69 @@ from .models import Course
 from .serializers import CourseSerializer
 
 
+# Stored in MongoDB for exam-details pages but not declared on Course — MongoEngine
+# does not include these keys in save(), so they must be written via raw update.
+_COURSE_EXTRA_MONGO_FIELDS = (
+    "about_heading",
+    "exam_details_heading",
+    "exam_details",
+    "details",
+    "why_matters_heading",
+    "whats_included_heading",
+    "topics_heading",
+    "practice_tests_heading",
+    "testimonials_heading",
+    "faqs_heading",
+    "test_instructions_heading",
+    "practice_page_section_1_heading",
+    "practice_page_section_1_content",
+    "practice_page_section_2_heading",
+    "practice_page_section_2_content",
+)
+
+
+def _course_extra_projection():
+    return ["_id"] + list(_COURSE_EXTRA_MONGO_FIELDS)
+
+
+def _merge_course_extra_from_doc(serialized, mongo_doc):
+    """Overlay exam-details-related keys from the raw course document onto API output."""
+    if not mongo_doc:
+        return serialized
+    out = dict(serialized)
+    for k in _COURSE_EXTRA_MONGO_FIELDS:
+        if k in mongo_doc:
+            out[k] = mongo_doc[k]
+    return out
+
+
+def _fetch_course_extra_doc(course_oid):
+    return Course._get_collection().find_one(
+        {"_id": course_oid},
+        projection=_course_extra_projection(),
+    )
+
+
+def _persist_course_extra_fields(course_oid, data):
+    extra_set = {k: data[k] for k in _COURSE_EXTRA_MONGO_FIELDS if k in data}
+    if not extra_set:
+        return
+    Course._get_collection().update_one({"_id": course_oid}, {"$set": extra_set})
+
+
+def _bulk_fetch_course_extra_docs(courses):
+    ids = [c.id for c in courses]
+    if not ids:
+        return {}
+    by_id = {}
+    for doc in Course._get_collection().find(
+        {"_id": {"$in": ids}},
+        projection=_course_extra_projection(),
+    ):
+        by_id[str(doc["_id"])] = doc
+    return by_id
+
+
 # ------------------------------------------------------------
 # ✅ PUBLIC: Get all active courses
 # ------------------------------------------------------------
@@ -75,9 +138,38 @@ def admin_course_list(request):
                 course.save()
         
         serializer = CourseSerializer(courses, many=True)
-        return Response({"success": True, "data": serializer.data})
+        extras = _bulk_fetch_course_extra_docs(courses)
+        merged = [
+            _merge_course_extra_from_doc(item, extras.get(item.get("id")))
+            for item in serializer.data
+        ]
+        return Response({"success": True, "data": merged})
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ------------------------------------------------------------
+# ✅ ADMIN: Get one course by ID (full serializer — exam manager, etc.)
+# ------------------------------------------------------------
+@api_view(["GET"])
+@authenticate
+@restrict(["admin"])
+@csrf_exempt
+def admin_course_detail(request, course_id):
+    try:
+        if not ObjectId.is_valid(course_id):
+            return Response({"error": "Invalid course ID"}, status=400)
+
+        course = Course.objects.get(id=ObjectId(course_id))
+        serializer = CourseSerializer(course)
+        raw = _fetch_course_extra_doc(course.id)
+        return Response(
+            {"success": True, "data": _merge_course_extra_from_doc(serializer.data, raw)}
+        )
+    except Course.DoesNotExist:
+        return Response({"error": "Course not found"}, status=404)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
 
 
 # ------------------------------------------------------------
@@ -511,7 +603,8 @@ def course_detail(request, course_identifier):
             course.save()
 
         serializer = CourseSerializer(course)
-        return Response(serializer.data)
+        raw = _fetch_course_extra_doc(course.id)
+        return Response(_merge_course_extra_from_doc(serializer.data, raw))
 
     except Course.DoesNotExist:
         return Response({"error": "Course not found"}, status=404)
@@ -595,7 +688,28 @@ def course_update(request, course_id):
         course.meta_description = data.get('meta_description')
 
         # Update extra details
-        for field in ["about", "about_heading", "why_matters_heading", "whats_included_heading", "topics_heading", "practice_tests_heading", "testimonials_heading", "faqs_heading", "test_instructions_heading", "eligibility", "exam_pattern", "difficulty", "duration", "passing_score", "why_matters", "pass_rate", "rating"]:
+        for field in [
+            "about",
+            "about_heading",
+            "exam_details_heading",
+            "exam_details",
+            "details",
+            "why_matters_heading",
+            "whats_included_heading",
+            "topics_heading",
+            "practice_tests_heading",
+            "testimonials_heading",
+            "faqs_heading",
+            "test_instructions_heading",
+            "eligibility",
+            "exam_pattern",
+            "difficulty",
+            "duration",
+            "passing_score",
+            "why_matters",
+            "pass_rate",
+            "rating",
+        ]:
             if field in data:
                 # Handle pass_rate and rating - allow null values
                 if field in ["pass_rate", "rating"]:
@@ -780,10 +894,18 @@ def course_update(request, course_id):
         course.updated_at = datetime.datetime.utcnow()
 
         course.save()
+        _persist_course_extra_fields(course.id, data)
         course.reload()
 
         serializer = CourseSerializer(course)
-        return Response({"success": True, "message": "Course updated successfully", "data": serializer.data})
+        raw = _fetch_course_extra_doc(course.id)
+        return Response(
+            {
+                "success": True,
+                "message": "Course updated successfully",
+                "data": _merge_course_extra_from_doc(serializer.data, raw),
+            }
+        )
 
     except Course.DoesNotExist:
         return Response({"error": "Course not found"}, status=404)

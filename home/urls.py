@@ -24,6 +24,7 @@ urlpatterns = [
     path('blog-posts-section/', views.get_blog_posts_section, name='get_blog_posts_section'),
     path('recently-updated-section/', views.get_recently_updated_section, name='get_recently_updated_section'),
     path('faqs-section/', views.get_faqs_section, name='get_faqs_section'),
+    path('section-content/', views.get_section_content, name='get_section_content'),
 
   
     # Admin APIs - Hero Section
@@ -52,6 +53,8 @@ urlpatterns = [
     
     # Admin APIs - Exams Page SEO
     path('admin/exams-page-seo/', views.manage_exams_page_seo, name='manage_exams_page_seo'),
+    path('admin/providers-page-seo/', views.manage_providers_page_seo, name='manage_providers_page_seo'),
+    path('admin/categories-page-seo/', views.manage_categories_page_seo, name='manage_categories_page_seo'),
     
     # Admin APIs - Exams Page
     path('admin/exams-trust-bar/', views.manage_exams_trust_bar, name='manage_exams_trust_bar'),
@@ -72,6 +75,7 @@ urlpatterns = [
     path('admin/blog-posts-section/', views.manage_blog_posts_section, name='manage_blog_posts_section'),
     path('admin/recently-updated-section/', views.manage_recently_updated_section, name='manage_recently_updated_section'),
     path('admin/faqs-section/', views.manage_faqs_section, name='manage_faqs_section'),
+    path('admin/section-content/', views.manage_section_content, name='manage_section_content'),
     
     # Admin APIs - Home Page SEO
     # path('admin/home-page-seo/', views.manage_home_page_seo, name='manage_home_page_seo'),
@@ -86,6 +90,8 @@ urlpatterns = [
     path('admin/exams-page-seo/', views.manage_exams_page_seo, name='manage_exams_page_seo'),
     
     path('exams-page-seo/', views.get_exams_page_seo, name='get_exams_page_seo'),
+    path('providers-page-seo/', views.get_providers_page_seo, name='get_providers_page_seo'),
+    path('categories-page-seo/', views.get_categories_page_seo, name='get_categories_page_seo'),
 
     
     # Admin APIs - Pricing Plans SEO
