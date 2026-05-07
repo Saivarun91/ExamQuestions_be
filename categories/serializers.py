@@ -6,6 +6,7 @@ from django.utils.text import slugify
 class CategorySerializer(serializers.Serializer):
     id = serializers.SerializerMethodField()
     title = serializers.CharField(required=True)
+    main_category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True)
     content = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     faqs = serializers.ListField(
@@ -28,6 +29,7 @@ class CategorySerializer(serializers.Serializer):
             'id': str(instance.id),
             'name': instance.title,  # Frontend expects 'name'
             'title': instance.title,
+            'main_category': getattr(instance, 'main_category', '') or '',
             'description': instance.description or '',
             'content': instance.content or '',
             'faqs': getattr(instance, 'faqs', []) or [],

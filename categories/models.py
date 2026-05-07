@@ -3,6 +3,7 @@ from django.utils.text import slugify
 
 class Category(Document):
     title = StringField(required=True, unique=True)
+    main_category = StringField()
     description = StringField()
     content = StringField()
     faqs = ListField(DictField())
