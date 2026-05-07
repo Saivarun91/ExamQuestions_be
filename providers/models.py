@@ -1,4 +1,13 @@
-from mongoengine import Document, StringField, BooleanField, IntField, DateTimeField, FileField
+from mongoengine import (
+    Document,
+    StringField,
+    BooleanField,
+    IntField,
+    DateTimeField,
+    FileField,
+    ListField,
+    DictField,
+)
 from django.utils.text import slugify
 import datetime
 
@@ -8,7 +17,12 @@ class Provider(Document):
     slug = StringField(required=True, unique=True)
     logo = FileField(required=False)  # Optional logo image file (legacy, kept for backward compatibility)
     logo_url = StringField(required=False)  # Cloudinary URL for logo
-    
+
+    # Provider page content fields
+    page_title = StringField(default="")
+    content = StringField(default="")
+    faqs = ListField(DictField(), default=list)
+
     # SEO Fields
     meta_title = StringField()
     meta_keywords = StringField()

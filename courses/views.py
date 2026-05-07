@@ -18,6 +18,7 @@ from .serializers import CourseSerializer
 # Stored in MongoDB for exam-details pages but not declared on Course — MongoEngine
 # does not include these keys in save(), so they must be written via raw update.
 _COURSE_EXTRA_MONGO_FIELDS = (
+    "page_heading",
     "about_heading",
     "exam_details_heading",
     "exam_details",
@@ -689,6 +690,7 @@ def course_update(request, course_id):
 
         # Update extra details
         for field in [
+            "page_heading",
             "about",
             "about_heading",
             "exam_details_heading",

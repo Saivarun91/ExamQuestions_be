@@ -1,9 +1,11 @@
-from mongoengine import Document, StringField
+from mongoengine import Document, StringField, ListField, DictField
 from django.utils.text import slugify
 
 class Category(Document):
     title = StringField(required=True, unique=True)
     description = StringField()
+    content = StringField()
+    faqs = ListField(DictField())
     icon = StringField(required=True)  # Cloud, Shield, etc.
     slug = StringField(required=True, unique=True)
 

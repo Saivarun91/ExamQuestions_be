@@ -7,6 +7,12 @@ class CategorySerializer(serializers.Serializer):
     id = serializers.SerializerMethodField()
     title = serializers.CharField(required=True)
     description = serializers.CharField(required=False, allow_blank=True)
+    content = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    faqs = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True,
+    )
     icon = serializers.CharField(required=True)
     slug = serializers.CharField(read_only=True)
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -23,6 +29,8 @@ class CategorySerializer(serializers.Serializer):
             'name': instance.title,  # Frontend expects 'name'
             'title': instance.title,
             'description': instance.description or '',
+            'content': instance.content or '',
+            'faqs': getattr(instance, 'faqs', []) or [],
             'icon': instance.icon,
             'slug': instance.slug,
             'is_active': getattr(instance, 'is_active', True),
@@ -52,3 +60,19 @@ class CategorySerializer(serializers.Serializer):
             setattr(instance, attr, value)
         instance.save()
         return instance
+
+    def validate_faqs(self, value):
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("FAQs must be a list.")
+
+        cleaned = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            question = str(item.get("question", "")).strip()
+            answer = str(item.get("answer", "")).strip()
+            if question and answer:
+                cleaned.append({"question": question, "answer": answer})
+        return cleaned

@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import HttpResponse, JsonResponse
 from django.conf import settings
 from common.middleware import authenticate, restrict
+import json
 
 # ✅ List all active providers (Public)
 @api_view(['GET'])
@@ -103,17 +104,10 @@ def admin_provider_list(request):
 def admin_provider_create(request):
     """Admin: Create a new provider"""
     try:
-        # Check if request is multipart/form-data (file upload) or JSON
-        is_multipart = request.content_type and 'multipart/form-data' in request.content_type
-        
-        if is_multipart:
-            # Handle multipart/form-data (with file uploads)
-            data = {}
-            for key in request.POST:
-                data[key] = request.POST[key]
-        else:
-            # Handle JSON request
-            data = request.data
+        # DRF request.data handles both JSON and multipart reliably
+        data = {}
+        for key in request.data:
+            data[key] = request.data.get(key)
         
         # Validate required fields
         if not data.get('name') or not data.get('icon'):
@@ -122,6 +116,24 @@ def admin_provider_create(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # Parse FAQs payload (supports JSON string from multipart or list from JSON body)
+        raw_faqs = data.get('faqs', [])
+        if isinstance(raw_faqs, str):
+            try:
+                raw_faqs = json.loads(raw_faqs)
+            except json.JSONDecodeError:
+                raw_faqs = []
+        if not isinstance(raw_faqs, list):
+            raw_faqs = []
+        faqs = []
+        for faq in raw_faqs:
+            if not isinstance(faq, dict):
+                continue
+            question = str(faq.get('question', '')).strip()
+            answer = str(faq.get('answer', '')).strip()
+            if question and answer:
+                faqs.append({'question': question, 'answer': answer})
+
         # Convert order to int if it's a string
         order = data.get('order', 0)
         if isinstance(order, str):
@@ -143,6 +155,9 @@ def admin_provider_create(request):
             icon=data['icon'],
             slug=data.get('slug', ''),  # Will auto-generate if empty
             logo_url=data.get('logo_url', ''),  # Cloudinary URL from frontend
+            page_title=data.get('page_title', ''),
+            content=data.get('content', ''),
+            faqs=faqs,
             meta_title=data.get('meta_title', ''),
             meta_keywords=data.get('meta_keywords', ''),
             meta_description=data.get('meta_description', ''),
@@ -154,6 +169,7 @@ def admin_provider_create(request):
         logo_file = request.FILES.get('logo')
         if logo_file:
             provider.logo.put(logo_file, content_type=logo_file.content_type)
+            provider.logo_url = None
         
         provider.save()
         
@@ -183,18 +199,31 @@ def admin_provider_update(request, provider_id):
         
         provider = Provider.objects.get(id=ObjectId(provider_id))
         
-        # Check if request is multipart/form-data (file upload) or JSON
-        is_multipart = request.content_type and 'multipart/form-data' in request.content_type
+        # DRF request.data handles both JSON and multipart reliably
+        data = {}
+        for key in request.data:
+            data[key] = request.data.get(key)
         
-        if is_multipart:
-            # Handle multipart/form-data (with file uploads)
-            data = {}
-            for key in request.POST:
-                data[key] = request.POST[key]
-        else:
-            # Handle JSON request
-            data = request.data
-        
+        # Parse FAQs payload (supports JSON string from multipart or list from JSON body)
+        if 'faqs' in data:
+            raw_faqs = data.get('faqs', [])
+            if isinstance(raw_faqs, str):
+                try:
+                    raw_faqs = json.loads(raw_faqs)
+                except json.JSONDecodeError:
+                    raw_faqs = []
+            if not isinstance(raw_faqs, list):
+                raw_faqs = []
+            faqs = []
+            for faq in raw_faqs:
+                if not isinstance(faq, dict):
+                    continue
+                question = str(faq.get('question', '')).strip()
+                answer = str(faq.get('answer', '')).strip()
+                if question and answer:
+                    faqs.append({'question': question, 'answer': answer})
+            provider.faqs = faqs
+
         # Update fields only if provided
         if 'name' in data:
             provider.name = data['name']
@@ -202,6 +231,10 @@ def admin_provider_update(request, provider_id):
             provider.icon = data['icon']
         if 'slug' in data:
             provider.slug = data['slug']
+        if 'description' in data:
+            provider.description = data['description']
+        if 'website_url' in data:
+            provider.website_url = data['website_url']
         if 'logo_url' in data:
             # If logo_url is empty string, clear it (remove logo)
             if data['logo_url'] == '' or data['logo_url'] is None:
@@ -214,6 +247,10 @@ def admin_provider_update(request, provider_id):
             provider.meta_keywords = data['meta_keywords']
         if 'meta_description' in data:
             provider.meta_description = data['meta_description']
+        if 'page_title' in data:
+            provider.page_title = data['page_title']
+        if 'content' in data:
+            provider.content = data['content']
         
         # Convert order to int if provided
         if 'order' in data:
@@ -251,6 +288,7 @@ def admin_provider_update(request, provider_id):
                 if provider.logo:
                     provider.logo.delete()
                 provider.logo.put(logo_file, content_type=logo_file.content_type)
+                provider.logo_url = None
         
         provider.save()
         

@@ -126,6 +126,7 @@ class CourseSerializer(serializers.Serializer):
             # Exam details fields
             'short_description': getattr(instance, 'short_description', None),
             'about': getattr(instance, 'about', None),
+            'page_heading': getattr(instance, 'page_heading', None),
             'about_heading': getattr(instance, 'about_heading', None),
             'exam_details_heading': getattr(instance, 'exam_details_heading', None),
             'exam_details': getattr(instance, 'exam_details', None),
