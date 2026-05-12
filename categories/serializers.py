@@ -2,6 +2,17 @@ from rest_framework import serializers
 from .models import Category
 from django.utils.text import slugify
 
+def _to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+    return bool(value)
+
 
 class CategorySerializer(serializers.Serializer):
     id = serializers.SerializerMethodField()
@@ -19,6 +30,7 @@ class CategorySerializer(serializers.Serializer):
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_keywords = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_top_certification = serializers.BooleanField(required=False, default=False)
 
     def get_id(self, obj):
         return str(obj.id)
@@ -39,6 +51,7 @@ class CategorySerializer(serializers.Serializer):
             'meta_title': instance.meta_title or '',
             'meta_keywords': instance.meta_keywords or '',
             'meta_description': instance.meta_description or '',
+            'is_top_certification': _to_bool(getattr(instance, 'is_top_certification', False)),
         }
 
     def create(self, validated_data):

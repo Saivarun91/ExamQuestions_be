@@ -377,7 +377,7 @@ def get_test_questions(request, course_id, test_id):
                 if isinstance(q.options, list):
                     for opt in q.options:
                         if isinstance(opt, dict):
-                            processed_options.append(opt)
+                            processed_options.append(dict(opt))
                         elif isinstance(opt, str):
                             processed_options.append({'text': opt})
                         else:
@@ -390,15 +390,51 @@ def get_test_questions(request, course_id, test_id):
                     except:
                         processed_options = [{'text': q.options}]
 
-            # Handle question_image - could be string URL or FileField
+            # Handle question_image: exams app uses GridFS FileField — never str(FileField)
             question_image = None
-            if hasattr(q, 'question_image') and q.question_image:
-                if hasattr(q.question_image, 'url'):
-                    question_image = q.question_image.url
-                elif isinstance(q.question_image, str):
-                    question_image = q.question_image
-                else:
-                    question_image = str(q.question_image)
+            try:
+                from exams.models import Question as ExamQuestion
+                is_exam_question = isinstance(q, ExamQuestion)
+            except Exception:
+                is_exam_question = False
+
+            if is_exam_question:
+                try:
+                    ext = getattr(q, "question_image_external_url", None)
+                    if (
+                        isinstance(ext, str)
+                        and ext.strip().startswith(("http://", "https://"))
+                    ):
+                        question_image = ext.strip()
+                    elif getattr(q, 'question_image', None):
+                        fi = q.question_image
+                        if fi:
+                            question_image = request.build_absolute_uri(
+                                f"/api/exams/questions/{q.id}/image/"
+                            )
+                except Exception:
+                    question_image = None
+            else:
+                qi = getattr(q, 'question_image', None)
+                if isinstance(qi, str) and qi.strip():
+                    question_image = qi.strip()
+                    if question_image.startswith('/') and not question_image.startswith('//'):
+                        question_image = request.build_absolute_uri(question_image)
+                elif qi:
+                    question_image = None
+
+            for opt in processed_options:
+                if not isinstance(opt, dict):
+                    continue
+                iu = opt.get('image_url') or opt.get('image')
+                if isinstance(iu, str):
+                    t = iu.strip()
+                    if 'GridFS' in t or 'gridfs' in t.lower():
+                        opt.pop('image_url', None)
+                        opt.pop('image', None)
+                    elif t.startswith('/') and not t.startswith('//'):
+                        opt['image_url'] = request.build_absolute_uri(t)
+                        opt.pop('image', None)
 
             questions_data.append({
                 'id': str(q.id),

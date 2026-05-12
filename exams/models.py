@@ -15,6 +15,8 @@ class Question(Document):
     category = ReferenceField("practice_tests.PracticeTest", required=True)  # <-- string reference
     question_text = StringField(required=False)  # Optional - can be empty if question_image is provided
     question_image = FileField(required=False)  # Optional - can be empty if question_text is provided
+    # Original HTTPS URL (e.g. Cloudinary) when the file is also stored in GridFS — used for admin preview & redirects
+    question_image_external_url = StringField(required=False, default=None, max_length=2048)
     question_type = StringField(choices=['MCQ', 'SINGLE', 'TRUE_FALSE'], required=True)
     # Options can be strings (text) or dicts with 'text' and/or 'image_url'
     options = ListField(DictField())  # Changed to DictField to support both text and image

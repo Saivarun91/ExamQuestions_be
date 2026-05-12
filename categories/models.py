@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, ListField, DictField
+from mongoengine import Document, StringField, ListField, DictField, BooleanField
 from django.utils.text import slugify
 
 class Category(Document):
@@ -14,6 +14,7 @@ class Category(Document):
     meta_title = StringField()
     meta_keywords = StringField()
     meta_description = StringField()
+    is_top_certification = BooleanField(default=False)
 
     meta = {
         "collection": "categories",

@@ -7,10 +7,11 @@ import os
 from datetime import datetime, timedelta
 from bson import ObjectId
 
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponseRedirect
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.utils import timezone
+from django.core.files.base import ContentFile
 
 from common.middleware import authenticate, restrict
 from exams.models import Question
@@ -66,10 +67,21 @@ def create_question(request):
             # Handle JSON request
             data = json.loads(request.body.decode('utf-8'))
 
+        # Normalize practice test id (Question.category references PracticeTest; API field name is legacy)
+        cid = data.get("category_id")
+        if cid is None or (isinstance(cid, str) and not cid.strip()):
+            for key in ("test_id", "practice_test_id", "categoryId", "practiceTestId"):
+                val = data.get(key)
+                if val is not None and (not isinstance(val, str) or val.strip()):
+                    data["category_id"] = val if not isinstance(val, str) else val.strip()
+                    break
+
         # ✅ Required fields check
         required_fields = ["category_id", "question_type", "options", "correct_answers"]
         for field in required_fields:
-            if field not in data:
+            if field not in data or data[field] is None:
+                return JsonResponse({"success": False, "message": f"{field} is required"}, status=400)
+            if field == "category_id" and isinstance(data[field], str) and not data[field].strip():
                 return JsonResponse({"success": False, "message": f"{field} is required"}, status=400)
 
         # ✅ Parse options and correct_answers if they are JSON strings
@@ -84,43 +96,101 @@ def create_question(request):
             except:
                 return JsonResponse({"success": False, "message": "Invalid correct_answers format"}, status=400)
 
-        # ✅ Validate category_id
-        category_id = data['category_id']
-        if not ObjectId.is_valid(category_id):
-            return JsonResponse({"success": False, "message": "Invalid category ID"}, status=400)
+        # ✅ Resolve PracticeTest (category_id is legacy; value may be ObjectId or slug when course_id is sent)
+        category_id_raw = str(data['category_id']).strip()
+        course_id_raw = data.get('course_id')
+        category = None
 
-        try:
-            category = PracticeTest.objects.get(id=ObjectId(category_id))
-        except PracticeTest.DoesNotExist:
-            return JsonResponse({"success": False, "message": "PracticeTest not found"}, status=404)
+        if ObjectId.is_valid(category_id_raw):
+            try:
+                category = PracticeTest.objects.get(id=ObjectId(category_id_raw))
+            except PracticeTest.DoesNotExist:
+                return JsonResponse({"success": False, "message": "PracticeTest not found"}, status=404)
+        else:
+            course_oid = None
+            if course_id_raw is not None:
+                cs = str(course_id_raw).strip()
+                if ObjectId.is_valid(cs):
+                    course_oid = ObjectId(cs)
+            if course_oid is not None:
+                try:
+                    from courses.models import Course
+                    course = Course.objects.get(id=course_oid)
+                    for pt in getattr(course, 'practice_tests', None) or []:
+                        if not pt:
+                            continue
+                        if str(pt.id) == category_id_raw or getattr(pt, 'slug', None) == category_id_raw:
+                            category = pt
+                            break
+                except Exception:
+                    category = None
+            if category is None:
+                pts = list(PracticeTest.objects(slug=category_id_raw))
+                if len(pts) == 1:
+                    category = pts[0]
+            if category is None:
+                return JsonResponse({
+                    "success": False,
+                    "message": "Invalid practice test id. Open the test from the course admin page, or send a valid 24-character test id with course_id so the server can match the test slug.",
+                }, status=400)
 
-        # ✅ Validate question: must have either text or image (or both)
+        # ✅ Validate question: must have either text or image (or both); JSON may carry a remote image URL
         question_text = data.get('question_text', '').strip() if data.get('question_text') else ''
         question_image_file = request.FILES.get('question_image') if is_multipart else None
-        
-        if not question_text and not question_image_file:
+        question_image_url = ''
+        if not is_multipart:
+            qi = data.get('question_image')
+            if isinstance(qi, str):
+                question_image_url = qi.strip()
+
+        if not question_text and not question_image_file and not question_image_url:
             return JsonResponse({
-                "success": False, 
+                "success": False,
                 "message": "Either question_text or question_image must be provided"
             }, status=400)
 
-        # ✅ Handle question image upload
+        # ✅ Handle question image upload (multipart file or JSON URL e.g. Cloudinary)
         question_image = None
+        question_image_content_type = None
         if question_image_file:
             # Create upload directory if it doesn't exist
             upload_dir = os.path.join(settings.MEDIA_ROOT, "question_images")
             os.makedirs(upload_dir, exist_ok=True)
-            
+
             # Save file
             filename = f"{timezone.now().strftime('%Y%m%d%H%M%S')}_{question_image_file.name}"
             file_path = os.path.join(upload_dir, filename)
-            
+
             with open(file_path, 'wb') as f:
                 for chunk in question_image_file.chunks():
                     f.write(chunk)
-            
+
             # Store file in GridFS FileField
             question_image = question_image_file
+            question_image_content_type = question_image_file.content_type
+        elif question_image_url.startswith(('http://', 'https://')):
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    question_image_url,
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                )
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    body = resp.read()
+                if not body:
+                    return JsonResponse({"success": False, "message": "Question image URL returned empty data"}, status=400)
+                raw_ct = resp.headers.get('Content-Type') or 'image/jpeg'
+                ctype = raw_ct.split(';')[0].strip() if raw_ct else 'image/jpeg'
+                if not ctype or ctype == 'application/octet-stream':
+                    ctype = 'image/jpeg'
+                question_image = ContentFile(body)
+                question_image.name = 'question_remote.jpg'
+                question_image_content_type = ctype
+            except Exception as e:
+                return JsonResponse({
+                    "success": False,
+                    "message": f"Could not load question image from URL: {str(e)}"
+                }, status=400)
 
         # ✅ Validate and process options
         options_raw = data['options']
@@ -235,10 +305,17 @@ def create_question(request):
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
-        
+        if (
+            question_image_url
+            and isinstance(question_image_url, str)
+            and question_image_url.strip().startswith(("http://", "https://"))
+        ):
+            question.question_image_external_url = question_image_url.strip()[:2048]
+
         # Save question image if provided
         if question_image:
-            question.question_image.put(question_image, content_type=question_image.content_type)
+            ct = question_image_content_type or getattr(question_image, 'content_type', None) or 'application/octet-stream'
+            question.question_image.put(question_image, content_type=ct)
         
         question.save()
 
@@ -275,8 +352,10 @@ def update_question(request, question_id):
         if not ObjectId.is_valid(question_id):
             return JsonResponse({"success": False, "message": "Invalid question ID"}, status=400)
 
-        question = Question.objects.get(id=ObjectId(question_id))
-        
+        question = Question.objects(_id=ObjectId(question_id)).first()
+        if not question:
+            return JsonResponse({"success": False, "message": "Question not found"}, status=404)
+
         # Check if request is multipart/form-data (file upload) or JSON
         is_multipart = request.content_type and 'multipart/form-data' in request.content_type
         
@@ -322,21 +401,78 @@ def update_question(request, question_id):
             
             # Store file in GridFS FileField
             question.question_image.put(question_image_file, content_type=question_image_file.content_type)
-        
+            question.question_image_external_url = None
+
+        elif not is_multipart and 'question_image' in data:
+            qi = data.get('question_image')
+            if isinstance(qi, str):
+                qi = qi.strip()
+            if isinstance(qi, str) and qi.startswith(('http://', 'https://')):
+                own_a = f"/api/exams/questions/{question_id}/image/"
+                own_b = f"/api/exams/questions/{str(question.id)}/image/"
+                if own_a in qi or own_b in qi:
+                    pass
+                else:
+                    try:
+                        import urllib.request
+                        req = urllib.request.Request(
+                            qi,
+                            headers={'User-Agent': 'Mozilla/5.0'},
+                        )
+                        with urllib.request.urlopen(req, timeout=45) as resp:
+                            body = resp.read()
+                        if body:
+                            raw_ct = resp.headers.get('Content-Type') or 'image/jpeg'
+                            ctype = raw_ct.split(';')[0].strip() if raw_ct else 'image/jpeg'
+                            if not ctype or ctype == 'application/octet-stream':
+                                ctype = 'image/jpeg'
+                            cf = ContentFile(body)
+                            cf.name = 'question_remote.jpg'
+                            question.question_image.put(cf, content_type=ctype)
+                            question.question_image_external_url = qi[:2048]
+                    except Exception:
+                        pass
+
         # Validate question: must have either text or image (or both)
         question_text = question.question_text.strip() if question.question_text else ''
-        has_question_image = question.question_image is not None
-        
+        ext_u = getattr(question, 'question_image_external_url', None)
+        qi_payload = None
+        if not is_multipart:
+            qiraw = data.get('question_image')
+            if isinstance(qiraw, str) and qiraw.strip().startswith(('http://', 'https://')):
+                qi_payload = qiraw.strip()
+        has_question_image = bool(question.question_image) or (
+            isinstance(ext_u, str) and ext_u.strip().startswith(('http://', 'https://'))
+        ) or (isinstance(qi_payload, str) and qi_payload.startswith(('http://', 'https://')))
+
         if not question_text and not has_question_image:
             return JsonResponse({
                 "success": False, 
                 "message": "Either question_text or question_image must be provided"
             }, status=400)
 
-        # Update other fields
-        for field in ['question_type', 'marks', 'explanation', 'tags']:
-            if field in data:
-                setattr(question, field, data[field])
+        # Update other fields (normalize types MongoEngine expects)
+        if 'question_type' in data:
+            qt = str(data['question_type']).strip().upper()
+            if qt in ('MULTIPLE',):
+                qt = 'MCQ'
+            if qt in ('SINGLE', 'MCQ', 'TRUE_FALSE'):
+                question.question_type = qt
+        if 'marks' in data:
+            try:
+                question.marks = int(data['marks'])
+            except (TypeError, ValueError):
+                question.marks = 1
+        if 'explanation' in data:
+            question.explanation = data.get('explanation') or ''
+        if 'tags' in data:
+            t = data['tags']
+            if isinstance(t, str):
+                question.tags = [x.strip() for x in t.split(',') if x.strip()]
+            elif isinstance(t, list):
+                question.tags = [str(x) for x in t if x is not None and str(x).strip() != '']
+            else:
+                question.tags = []
 
         # Handle options update
         if 'options' in data:
@@ -414,28 +550,40 @@ def update_question(request, question_id):
             if not isinstance(correct_answers, list) or len(correct_answers) == 0:
                 return JsonResponse({"success": False, "message": "At least one correct answer is required"}, status=400)
 
-            # Get current options for validation
-            current_options = data.get('options', question.options)
-            
+            # Use question.options (already replaced if this request included "options")
+            current_options = list(question.options) if question.options else []
+
             # Convert correct answers to option identifiers
             processed_correct_answers = []
+            n_opts = len(current_options)
             for ans in correct_answers:
-                # If answer is an index (integer or string number)
-                if isinstance(ans, int) or (isinstance(ans, str) and ans.isdigit()):
-                    idx = int(ans)
-                    if 0 <= idx < len(current_options):
+                # If answer is an index (integer or string number) — support 0-based and 1-based
+                if isinstance(ans, int) or (isinstance(ans, str) and str(ans).strip().isdigit()):
+                    idx = int(str(ans).strip())
+                    if 0 <= idx < n_opts:
                         processed_correct_answers.append(str(idx))
+                    elif n_opts > 0 and 1 <= idx <= n_opts:
+                        processed_correct_answers.append(str(idx - 1))
                     else:
                         return JsonResponse({
-                            "success": False, 
+                            "success": False,
                             "message": f"Invalid correct answer index: {idx}"
                         }, status=400)
                 else:
-                    # Try to match by text
+                    # Match by option text or image URL
                     found = False
+                    ans_s = str(ans).strip()
                     for idx, opt in enumerate(current_options):
-                        opt_text = opt.get('text', '').strip() if isinstance(opt, dict) and opt.get('text') else (str(opt).strip() if isinstance(opt, str) else '')
-                        if opt_text == str(ans).strip():
+                        if isinstance(opt, dict):
+                            opt_text = (opt.get('text') or '').strip()
+                            opt_img = (opt.get('image_url') or opt.get('image') or '').strip()
+                        elif isinstance(opt, str):
+                            opt_text = opt.strip()
+                            opt_img = ''
+                        else:
+                            opt_text = str(opt).strip()
+                            opt_img = ''
+                        if opt_text == ans_s or (opt_img and opt_img == ans_s):
                             processed_correct_answers.append(str(idx))
                             found = True
                             break
@@ -580,23 +728,42 @@ def get_question_image(request, question_id):
         if not ObjectId.is_valid(question_id):
             return JsonResponse({"success": False, "message": "Invalid question ID"}, status=400)
         
-        question = Question.objects.get(id=ObjectId(question_id))
-        
-        if not question.question_image:
+        question = Question.objects(_id=ObjectId(question_id)).first()
+        if not question:
+            return JsonResponse({"success": False, "message": "Question not found"}, status=404)
+
+        ext = getattr(question, "question_image_external_url", None)
+        if (
+            isinstance(ext, str)
+            and ext.strip().startswith(("http://", "https://"))
+        ):
+            return HttpResponseRedirect(ext.strip())
+
+        field = question.question_image
+        if not field:
             return JsonResponse({"success": False, "message": "Question image not found"}, status=404)
-        
+
         from django.http import HttpResponse
-        image_data = question.question_image.read()
-        content_type = getattr(question.question_image, 'content_type', 'image/jpeg')
+        try:
+            if hasattr(field, "seek"):
+                field.seek(0)
+            image_data = field.read()
+        except Exception:
+            image_data = None
+
+        if not image_data:
+            return JsonResponse({"success": False, "message": "Question image not found"}, status=404)
+
+        content_type = getattr(field, "content_type", None) or "image/jpeg"
+        if not isinstance(content_type, str) or "/" not in content_type:
+            content_type = "image/jpeg"
         response = HttpResponse(image_data, content_type=content_type)
         file_ext = content_type.split("/")[-1] if "/" in content_type else "jpg"
         response['Content-Disposition'] = f'inline; filename="question_{question_id}.{file_ext}"'
         return response
         
-    except Question.DoesNotExist:
-        return JsonResponse({"success": False, "message": "Question not found"}, status=404)
     except Exception as e:
-        return JsonResponse({"success": False, "message": str(e)}, status=400)
+        return JsonResponse({"success": False, "message": str(e)}, status=404)
 
 
 # -------------------------------
@@ -613,11 +780,19 @@ def get_question_by_id(request, question_id):
         if not ObjectId.is_valid(question_id):
             return JsonResponse({"success": False, "message": "Invalid question ID"}, status=400)
 
-        question = Question.objects.get(id=ObjectId(question_id))
-        
-        # Build question image URL if exists
+        question = Question.objects(_id=ObjectId(question_id)).first()
+        if not question:
+            return JsonResponse({"success": False, "message": "Question not found"}, status=404)
+
+        # Prefer external HTTPS URL for admin / clients; else GridFS image endpoint
         question_image_url = None
-        if question.question_image:
+        ext = getattr(question, "question_image_external_url", None)
+        if (
+            isinstance(ext, str)
+            and ext.strip().startswith(("http://", "https://"))
+        ):
+            question_image_url = ext.strip()
+        elif question.question_image:
             question_image_url = request.build_absolute_uri(f"/api/exams/questions/{question_id}/image/")
         
         # Process options - handle both old format (strings) and new format (dicts)
@@ -648,8 +823,6 @@ def get_question_by_id(request, question_id):
         }
         return JsonResponse({"success": True, "question": question_data}, status=200)
 
-    except Question.DoesNotExist:
-        return JsonResponse({"success": False, "message": "Question not found"}, status=404)
     except Exception as e:
         return JsonResponse({"success": False, "message": str(e)}, status=400)
 
@@ -697,9 +870,15 @@ def get_questions(request):
 
         question_list = []
         for q in questions:
-            # Build question image URL if exists
+            # Prefer stored HTTPS URL (Cloudinary) for admin preview; else GridFS image endpoint
             question_image_url = None
-            if q.question_image:
+            ext = getattr(q, "question_image_external_url", None)
+            if (
+                isinstance(ext, str)
+                and ext.strip().startswith(("http://", "https://"))
+            ):
+                question_image_url = ext.strip()
+            elif q.question_image:
                 question_image_url = request.build_absolute_uri(f"/api/exams/questions/{q.id}/image/")
             
             # Process options - handle both old format (strings) and new format (dicts)
@@ -2454,10 +2633,9 @@ def get_topic_wise_analysis(request, attempt_id):
             # If not in dict, fetch from Question model
             if (not tags or len(tags) == 0) and question_id and ObjectId.is_valid(str(question_id)):
                 try:
-                    question_obj = Question.objects.get(id=ObjectId(question_id))
-                    tags = getattr(question_obj, 'tags', []) or []
-                except Question.DoesNotExist:
-                    pass
+                    question_obj = Question.objects(_id=ObjectId(str(question_id))).first()
+                    if question_obj:
+                        tags = getattr(question_obj, 'tags', []) or []
                 except Exception as e:
                     print(f"Error fetching tags for question {question_id}: {e}")
             
@@ -2558,7 +2736,20 @@ def create_question_bank(request):
 
         category = PracticeTest.objects.get(id=ObjectId(category_id))
         question_ids = data.get("question_ids", [])
-        questions = [Question.objects.get(id=ObjectId(qid)) for qid in question_ids]
+        questions = []
+        for qid in question_ids:
+            if not ObjectId.is_valid(str(qid)):
+                return JsonResponse(
+                    {"success": False, "message": f"Invalid question ID: {qid}"},
+                    status=400,
+                )
+            q = Question.objects(_id=ObjectId(str(qid))).first()
+            if not q:
+                return JsonResponse(
+                    {"success": False, "message": f"Question not found: {qid}"},
+                    status=404,
+                )
+            questions.append(q)
 
         qb = QuestionBank.objects.create(
             category=category,
