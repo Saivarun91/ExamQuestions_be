@@ -59,11 +59,14 @@ class CourseSerializer(serializers.Serializer):
         # Handle provider - get provider.name and slug if it's a ReferenceField
         provider_value = ''
         provider_slug = None
+        provider_id = None
         try:
             provider_ref = getattr(instance, 'provider', None)
             if provider_ref:
                 # If it's a ReferenceField object, get the name and slug attributes
                 try:
+                    if hasattr(provider_ref, 'id') and provider_ref.id is not None:
+                        provider_id = str(provider_ref.id)
                     if hasattr(provider_ref, 'name'):
                         provider_value = provider_ref.name
                     else:
@@ -74,10 +77,12 @@ class CourseSerializer(serializers.Serializer):
                     # Provider reference is broken/missing, set to empty string
                     provider_value = ''
                     provider_slug = None
+                    provider_id = None
         except Exception:
             # If accessing provider fails, set to empty string
             provider_value = ''
             provider_slug = None
+            provider_id = None
         
         # Handle category - get category.title and slug if it's a ReferenceField
         category_value = None
@@ -107,6 +112,7 @@ class CourseSerializer(serializers.Serializer):
         return {
             'id': str(instance.id),
             'provider': provider_value,
+            'provider_id': provider_id,
             'provider_slug': provider_slug,
             'title': getattr(instance, 'title', getattr(instance, 'name', '')),
             'code': getattr(instance, 'code', ''),

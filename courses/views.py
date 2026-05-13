@@ -649,6 +649,26 @@ def course_update(request, course_id):
             except Category.DoesNotExist:
                 return Response({"error": f"Category '{category_input}' not found"}, status=400)
 
+        # Update provider if provided (same resolution as course_create)
+        if "provider" in data:
+            from providers.models import Provider
+
+            provider_input = data["provider"]
+            try:
+                if ObjectId.is_valid(str(provider_input)):
+                    provider = Provider.objects.get(id=ObjectId(provider_input))
+                else:
+                    try:
+                        provider = Provider.objects.get(name=provider_input)
+                    except Provider.DoesNotExist:
+                        provider = Provider.objects.get(slug=provider_input)
+                course.provider = provider
+            except Provider.DoesNotExist:
+                return Response(
+                    {"error": f"Provider '{provider_input}' not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         # Update fields
         if 'title' in data:
             course.title = data['title']
@@ -975,12 +995,37 @@ def courses_by_category(request, category_slug):
 @permission_classes([AllowAny])
 @csrf_exempt
 def featured_courses(request):
-    """Get all featured courses for homepage Featured Exams section"""
+    """Latest active course from each top certification category for homepage Featured Exams."""
     try:
         from practice_tests.models import PracticeTest
-        
-        courses = Course.objects(is_active=True, is_featured=True).order_by('-created_at')
-        
+        from categories.models import Category
+
+        def _is_top_certification_category(category):
+            value = getattr(category, 'is_top_certification', False)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                return value.strip().lower() in {'true', '1', 'yes', 'y', 'on'}
+            return bool(value)
+
+        top_categories = [
+            category
+            for category in Category.objects.all()
+            if _is_top_certification_category(category)
+        ]
+        courses = []
+
+        for category in top_categories:
+            latest_course = (
+                Course.objects(category=category, is_active=True)
+                .order_by('-created_at')
+                .first()
+            )
+            if latest_course:
+                courses.append(latest_course)
+
         # ✅ AUTO-SYNC: Ensure practice_exams count is accurate for each course
         for course in courses:
             try:
