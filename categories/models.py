@@ -16,6 +16,10 @@ class Category(Document):
     meta_description = StringField()
     is_top_certification = BooleanField(default=False)
 
+    # Hero section (category detail page)
+    hero_title = StringField()
+    hero_subtitle = StringField()
+
     meta = {
         "collection": "categories",
         "strict": False

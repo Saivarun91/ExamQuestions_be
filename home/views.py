@@ -1661,12 +1661,21 @@ def get_recently_updated_exams(request):
             except Exception:
                 # Fallback to old practice_tests_list if references fail
                 practice_tests_list = getattr(exam, 'practice_tests_list', [])
+
+            provider_slug = None
+            try:
+                provider_ref = getattr(exam, "provider", None)
+                if provider_ref is not None and hasattr(provider_ref, "slug"):
+                    provider_slug = provider_ref.slug
+            except Exception:
+                provider_slug = None
             
             data.append({
                 "id": str(exam.id),
                 "title": exam.title,
                 "code": exam.code,
                 "provider": provider_name,
+                "provider_slug": provider_slug,
                 "slug": exam.slug,
                 "practice_exams": exam.practice_exams or 0,
                 "questions": exam.questions or 0,
@@ -3336,6 +3345,8 @@ def manage_categories_page_seo(request):
             seo.meta_description = data.get(
                 "meta_description", seo.meta_description
             )
+            seo.hero_title = data.get("hero_title", seo.hero_title)
+            seo.hero_subtitle = data.get("hero_subtitle", seo.hero_subtitle)
             seo.updated_at = datetime.utcnow()
             seo.save()
 
@@ -3348,6 +3359,8 @@ def manage_categories_page_seo(request):
                         "meta_title": seo.meta_title or "",
                         "meta_keywords": seo.meta_keywords or "",
                         "meta_description": seo.meta_description or "",
+                        "hero_title": seo.hero_title or "",
+                        "hero_subtitle": seo.hero_subtitle or "",
                     },
                 }
             )
@@ -3365,6 +3378,8 @@ def manage_categories_page_seo(request):
                             "meta_title": "",
                             "meta_keywords": "",
                             "meta_description": "",
+                            "hero_title": "",
+                            "hero_subtitle": "",
                         },
                     }
                 )
@@ -3377,6 +3392,8 @@ def manage_categories_page_seo(request):
                         "meta_title": seo.meta_title or "",
                         "meta_keywords": seo.meta_keywords or "",
                         "meta_description": seo.meta_description or "",
+                        "hero_title": getattr(seo, "hero_title", "") or "",
+                        "hero_subtitle": getattr(seo, "hero_subtitle", "") or "",
                     },
                 }
             )
@@ -3397,6 +3414,8 @@ def get_categories_page_seo(request):
                         "meta_title": "",
                         "meta_keywords": "",
                         "meta_description": "",
+                        "hero_title": "",
+                        "hero_subtitle": "",
                     }
                 )
 
@@ -3405,6 +3424,8 @@ def get_categories_page_seo(request):
                     "meta_title": seo.meta_title or "",
                     "meta_keywords": seo.meta_keywords or "",
                     "meta_description": seo.meta_description or "",
+                    "hero_title": getattr(seo, "hero_title", "") or "",
+                    "hero_subtitle": getattr(seo, "hero_subtitle", "") or "",
                 }
             )
         except Exception as e:

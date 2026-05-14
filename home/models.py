@@ -460,6 +460,8 @@ class CategoriesPageSeo(Document):
     meta_title = StringField()
     meta_keywords = StringField()
     meta_description = StringField()
+    hero_title = StringField()
+    hero_subtitle = StringField()
 
     # System
     is_active = BooleanField(default=True)
