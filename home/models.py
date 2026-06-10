@@ -272,6 +272,13 @@ class BlogPost(Document):
     meta_title = StringField()
     meta_keywords = StringField()
     meta_description = StringField()
+
+    faqs = ListField(DictField(), default=list)
+
+    # Inline slider shown mid-article on blog detail page: providers | categories | popular_exams
+    content_slider_type = StringField(default=None)
+    # Category slug or provider slug when slider should list that entity's latest exams
+    content_slider_ref = StringField(default=None)
     
     created_at = DateTimeField(default=datetime.datetime.utcnow)
     updated_at = DateTimeField(default=datetime.datetime.utcnow)

@@ -9,15 +9,179 @@ import datetime
 import re
 
 from bson import ObjectId
+from mongoengine.errors import NotUniqueError
 from common.middleware import authenticate, restrict
+from common.duplicate_validation import duplicate_conflict, not_unique_conflict
 
 from .models import Course
 from .serializers import CourseSerializer
 
 
+def _provider_input_is_empty(provider_input):
+    return provider_input is None or (
+        isinstance(provider_input, str) and not provider_input.strip()
+    )
+
+
+def _resolve_provider(provider_input):
+    """Resolve provider id/name/slug to a Provider, or None when omitted."""
+    from providers.models import Provider
+
+    if _provider_input_is_empty(provider_input):
+        return None
+
+    try:
+        if ObjectId.is_valid(str(provider_input)):
+            return Provider.objects.get(id=ObjectId(provider_input))
+        try:
+            return Provider.objects.get(name=provider_input)
+        except Provider.DoesNotExist:
+            return Provider.objects.get(slug=provider_input)
+    except Provider.DoesNotExist:
+        raise ValueError(f"Provider '{provider_input}' not found")
+
+
+def _course_duplicate_message(provider, slug=None, code=None, title=None, exclude_id=None):
+    """Return a user-facing duplicate message if an exam/course already exists."""
+    if provider:
+        queryset = Course.objects(provider=provider)
+        scope = " for this provider"
+    else:
+        queryset = Course.objects(provider=None)
+        scope = ""
+    if exclude_id and ObjectId.is_valid(str(exclude_id)):
+        queryset = queryset.filter(id__ne=ObjectId(str(exclude_id)))
+
+    if slug:
+        existing = queryset.filter(slug__iexact=(slug or "").strip().lower()).first()
+        if existing:
+            return (
+                f'An exam with slug "{slug}" already exists{scope}.',
+                "slug",
+            )
+
+    if code:
+        existing = queryset.filter(code__iexact=(code or "").strip()).first()
+        if existing:
+            return (
+                f'An exam with code "{code}" already exists{scope}.',
+                "code",
+            )
+
+    if title:
+        existing = queryset.filter(title__iexact=(title or "").strip()).first()
+        if existing:
+            return (
+                f'An exam titled "{title}" already exists{scope}.',
+                "title",
+            )
+
+    return None, None
+
+
+def _parse_bool(value, default=False):
+    """Parse booleans from JSON/form values reliably (avoids bool('false') == True)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _course_is_featured(course):
+    return _parse_bool(getattr(course, "is_featured", False), default=False)
+
+
+def _get_admin_featured_courses(limit=None):
+    """Active courses explicitly marked featured in admin (Popular/Featured checkbox)."""
+    candidates = Course.objects(is_active=True).order_by("-updated_at", "-created_at")
+    featured = [c for c in candidates if _course_is_featured(c)]
+    if limit is not None:
+        return featured[:limit]
+    return featured
+
+
 # Stored in MongoDB for exam-details pages but not declared on Course — MongoEngine
 # does not include these keys in save(), so they must be written via raw update.
 _COURSE_EXTRA_MONGO_FIELDS = (
+    "page_heading",
+    "about_heading",
+    "exam_details_heading",
+    "exam_details",
+    "details",
+    "why_matters_heading",
+    "whats_included_heading",
+    "topics_heading",
+    "practice_tests_heading",
+    "testimonials_heading",
+    "faqs_heading",
+    "test_instructions_heading",
+    "practice_page_section_1_heading",
+    "practice_page_section_1_content",
+    "practice_page_section_2_heading",
+    "practice_page_section_2_content",
+    "official_details_content",
+    "official_details_meta_title",
+    "official_details_meta_keywords",
+    "official_details_meta_description",
+    "official_details_page_title",
+    "official_details_url_slug",
+    "official_details_stat_exam_code",
+    "official_details_stat_duration",
+    "official_details_stat_total_questions",
+    "official_details_stat_cost",
+    "official_details_stat_certification_body",
+    "official_details_stat_validity",
+    "official_details_faqs",
+)
+
+_OFFICIAL_DETAILS_FIELD_KEYS = (
+    "official_details_content",
+    "official_details_meta_title",
+    "official_details_meta_keywords",
+    "official_details_meta_description",
+    "official_details_page_title",
+    "official_details_url_slug",
+    "official_details_stat_exam_code",
+    "official_details_stat_duration",
+    "official_details_stat_total_questions",
+    "official_details_stat_cost",
+    "official_details_stat_certification_body",
+    "official_details_stat_validity",
+    "official_details_faqs",
+)
+
+_EXAM_DETAILS_FIELD_KEYS = (
+    "short_description",
+    "about",
+    "eligibility",
+    "exam_pattern",
+    "pass_rate",
+    "rating",
+    "difficulty",
+    "duration",
+    "passing_score",
+    "whats_included",
+    "why_matters",
+    "topics",
+    "testimonials",
+    "faqs",
+    "test_instructions",
+    "test_description",
+    "hero_title",
+    "hero_subtitle",
+    "pricing_plans",
+    "pricing_features",
+    "pricing_testimonials",
+    "pricing_faqs",
+    "pricing_comparison",
+    "meta_title",
+    "meta_keywords",
+    "meta_description",
     "page_heading",
     "about_heading",
     "exam_details_heading",
@@ -117,27 +281,8 @@ def course_list(request):
 @csrf_exempt
 def admin_course_list(request):
     try:
-        from practice_tests.models import PracticeTest
-        from questions.models import Question
-        
         courses = Course.objects.all().order_by('-created_at')
-        
-        # ✅ AUTO-SYNC: Ensure counts are accurate for each course
-        for course in courses:
-            # Sync practice_exams count
-            practice_test_count = PracticeTest.objects(course=course).count()
-            if course.practice_exams != practice_test_count:
-                course.practice_exams = practice_test_count
-            
-            # Sync questions count
-            question_count = Question.objects(course=course).count()
-            if course.questions != question_count:
-                course.questions = question_count
-            
-            # Save if any changes
-            if course.practice_exams != practice_test_count or course.questions != question_count:
-                course.save()
-        
+
         serializer = CourseSerializer(courses, many=True)
         extras = _bulk_fetch_course_extra_docs(courses)
         merged = [
@@ -183,29 +328,21 @@ def admin_course_detail(request, course_id):
 def course_create(request):
     """Admin: Create new course"""
     try:
-        from providers.models import Provider
         from categories.models import Category
 
         data = request.data
 
         # Required fields
-        required_fields = ['provider', 'title', 'code', 'slug']
+        required_fields = ['title', 'code', 'slug']
         for field in required_fields:
             if field not in data:
                 return Response({"error": f"{field} is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Provider (id or name or slug)
-        provider_input = data['provider']
+        # Provider (optional — id, name, or slug)
         try:
-            if ObjectId.is_valid(provider_input):
-                provider = Provider.objects.get(id=ObjectId(provider_input))
-            else:
-                try:
-                    provider = Provider.objects.get(name=provider_input)
-                except Provider.DoesNotExist:
-                    provider = Provider.objects.get(slug=provider_input)
-        except Provider.DoesNotExist:
-            return Response({"error": f"Provider '{provider_input}' not found"}, status=400)
+            provider = _resolve_provider(data.get('provider'))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=400)
 
         # Category (optional)
         category = None
@@ -222,25 +359,35 @@ def course_create(request):
             except Category.DoesNotExist:
                 return Response({"error": f"Category '{category_input}' not found"}, status=400)
 
-        # ✅ AUTO-SYNC: If category is assigned, automatically mark as featured
-        # If is_featured is explicitly set, use that; otherwise, mark as featured if category exists
-        is_featured = data.get('is_featured', False)
-        if category and not is_featured:
-            is_featured = True  # Auto-mark as featured when category is assigned
+        # "is_featured" controls "Popular/Featured exams" shown on Home + sidebar.
+        # Do NOT auto-enable it based on category; it must be explicitly chosen in admin.
+        is_featured = _parse_bool(data.get("is_featured"), default=False)
 
         # ✅ AUTO-CALCULATE: Get actual counts from related documents
         from practice_tests.models import PracticeTest
         from questions.models import Question
         
-        # ✅ Normalize slug for SEO-friendly URLs (use hyphens, not underscores)
-        slug = data['slug'].replace('_', '-').lower()
-        
+        # Store slug exactly as entered in admin (trim whitespace only)
+        slug = str(data['slug']).strip()
+        code = str(data.get('code') or '').strip() or slug
+        title = str(data['title']).strip()
+
+        duplicate_message, duplicate_field = _course_duplicate_message(
+            provider,
+            slug=slug,
+            code=code,
+            title=title,
+        )
+        if duplicate_message:
+            return duplicate_conflict(duplicate_message, field=duplicate_field)
+
         # Create course first (with 0 counts, will be updated)
         course = Course(
             provider=provider,
-            title=data['title'],
-            code=data['code'],
+            title=title,
+            code=code,
             slug=slug,  # Use normalized slug
+            exam_name=data.get('exam_name') or None,
             practice_exams=0,  # Will be auto-calculated
             questions=0,  # Will be auto-calculated
             badge=data.get('badge'),
@@ -249,24 +396,35 @@ def course_create(request):
             offer_price=float(data.get('offer_price', 0)),
             currency=data.get('currency', 'INR'),
             is_featured=is_featured,
+            show_in_official_details=_parse_bool(
+                data.get('show_in_official_details'),
+                default=False
+            ),
             meta_title=data.get('meta_title'),
             meta_keywords=data.get('meta_keywords'),
             meta_description=data.get('meta_description'),
         )
 
-        course.save()
-        
+        try:
+            course.save()
+        except NotUniqueError as exc:
+            return not_unique_conflict(exc, field="slug")
+
         # ✅ AUTO-SYNC: Calculate and update counts from related documents
         practice_test_count = PracticeTest.objects(course=course).count()
         question_count = Question.objects(course=course).count()
         course.practice_exams = practice_test_count
         course.questions = question_count
         course.save()
-        
+
         serializer = CourseSerializer(course)
         return Response({"success": True, "message": "Course created successfully", "data": serializer.data}, status=201)
 
+    except NotUniqueError as exc:
+        return not_unique_conflict(exc, field="slug")
     except Exception as e:
+        if "duplicate key" in str(e).lower() or "E11000" in str(e):
+            return duplicate_conflict("This exam already exists for this provider.", field="slug")
         return Response({"error": str(e)}, status=500)
 
 
@@ -282,32 +440,43 @@ def course_detail(request, course_identifier):
         from urllib.parse import unquote
         from providers.models import Provider
 
-        course_identifier = unquote(course_identifier)
-        # Normalize identifier: convert to lowercase and replace underscores with hyphens for SEO
-        course_identifier = course_identifier.lower().replace('_', '-')
+        course_identifier = unquote(course_identifier).strip()
 
-        # 1️⃣ Try by ID
+        course = None
         if ObjectId.is_valid(course_identifier):
             course = Course.objects.get(id=ObjectId(course_identifier))
-
         else:
-            course = None
-            # 2️⃣ Try by slug (exact match first) - SEO-friendly URL
             try:
                 course = Course.objects.get(slug=course_identifier)
             except Course.DoesNotExist:
-                # 2b️⃣ Try by slug with case-insensitive match
                 try:
                     course = Course.objects.get(slug__iexact=course_identifier)
                 except Course.DoesNotExist:
-                    # 3️⃣ Try provider-code format → example: aws-saa-c03 or sap-se-c-bw4h-2505
-                    # SEO URLs should use hyphens, normalize underscores to hyphens
+                    try:
+                        # Official details public URL can be independent from exam slug.
+                        course = Course.objects.get(
+                            official_details_url_slug=course_identifier
+                        )
+                    except Course.DoesNotExist:
+                        try:
+                            course = Course.objects.get(
+                                official_details_url_slug__iexact=course_identifier
+                            )
+                        except Course.DoesNotExist:
+                            course = None
+
+        if course is None:
+            # Legacy SEO lookup (normalized lowercase slug + provider/code probing)
+            course_identifier = course_identifier.lower().replace('_', '-')
+
+            try:
+                course = Course.objects.get(slug=course_identifier)
+            except Course.DoesNotExist:
+                try:
+                    course = Course.objects.get(slug__iexact=course_identifier)
+                except Course.DoesNotExist:
                     normalized_identifier = course_identifier.replace('_', '-')
-                    
-                    # Split by hyphens - need to handle multi-word providers
-                    # For "sap-se-c-bw4h-2505", provider might be "sap-se" and code "c-bw4h-2505"
-                    # Or provider might be "sap" and code "se-c-bw4h-2505"
-                    # Try multiple split strategies
+
                     if '-' in normalized_identifier:
                         all_parts = normalized_identifier.split('-')
                         provider = None
@@ -580,6 +749,32 @@ def course_detail(request, course_identifier):
                                     except Exception:
                                         continue
                     
+                    # Legacy public URLs: old slug is often a prefix of the current canonical slug.
+                    if not course:
+                        try:
+                            identifier_lower = normalized_identifier.lower()
+                            prefix_matches = list(
+                                Course.objects.filter(
+                                    slug__istartswith=identifier_lower,
+                                    is_active=True,
+                                )
+                            )
+                            if len(prefix_matches) == 1:
+                                course = prefix_matches[0]
+                            elif len(prefix_matches) > 1:
+                                continued = [
+                                    c
+                                    for c in prefix_matches
+                                    if c.slug.lower() == identifier_lower
+                                    or c.slug.lower().startswith(
+                                        identifier_lower + "-"
+                                    )
+                                ]
+                                if len(continued) == 1:
+                                    course = continued[0]
+                        except Exception:
+                            pass
+
                     # If still not found, raise DoesNotExist
                     if not course:
                         # Log for debugging
@@ -643,40 +838,34 @@ def course_update(request, course_id):
                     except Category.DoesNotExist:
                         category = Category.objects.get(slug=category_input)
                 course.category = category
-                # ✅ AUTO-SYNC: If category is assigned, automatically mark as featured
-                if not course.is_featured:
-                    course.is_featured = True
             except Category.DoesNotExist:
                 return Response({"error": f"Category '{category_input}' not found"}, status=400)
 
-        # Update provider if provided (same resolution as course_create)
+        # Update provider if provided (optional — omit or send null/empty to clear)
         if "provider" in data:
-            from providers.models import Provider
-
-            provider_input = data["provider"]
             try:
-                if ObjectId.is_valid(str(provider_input)):
-                    provider = Provider.objects.get(id=ObjectId(provider_input))
-                else:
-                    try:
-                        provider = Provider.objects.get(name=provider_input)
-                    except Provider.DoesNotExist:
-                        provider = Provider.objects.get(slug=provider_input)
-                course.provider = provider
-            except Provider.DoesNotExist:
-                return Response(
-                    {"error": f"Provider '{provider_input}' not found"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                course.provider = _resolve_provider(data["provider"])
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         # Update fields
         if 'title' in data:
             course.title = data['title']
         if 'code' in data:
-            course.code = data['code']
+            new_code = str(data.get('code') or '').strip()
+            if new_code:
+                course.code = new_code
+            elif not getattr(course, 'code', None):
+                course.code = str(course.slug or '').strip() or 'exam'
         if 'slug' in data:
-            # ✅ Normalize slug for SEO-friendly URLs (use hyphens, not underscores)
-            course.slug = data['slug'].replace('_', '-').lower()
+            course.slug = str(data['slug']).strip()
+        if 'exam_name' in data:
+            course.exam_name = data.get('exam_name') or None
+        if "show_in_official_details" in data:
+            course.show_in_official_details = _parse_bool(
+                data.get("show_in_official_details"),
+                default=course.show_in_official_details
+            )
         if 'questions' in data:
             course.questions = int(data['questions'])
         if 'practice_exams' in data:
@@ -691,22 +880,23 @@ def course_update(request, course_id):
             course.offer_price = float(data['offer_price']) if data['offer_price'] else 0.0
         if 'currency' in data:
             course.currency = data['currency']
-        if 'is_featured' in data:
-            course.is_featured = bool(data['is_featured'])
-            # ✅ AUTO-SYNC: If marked as featured, ensure it has a category
-            if course.is_featured and not course.category:
-                # Try to find a default category or use the first available category
-                from categories.models import Category
-                default_category = Category.objects.first()
-                if default_category:
-                    course.category = default_category
+        if "is_featured" in data:
+            course.is_featured = _parse_bool(data["is_featured"], default=False)
+        if "show_in_official_details" in data:
+            course.show_in_official_details = str(
+                data["show_in_official_details"]
+            ).lower() in ["true", "1", "yes", "on"]
         if 'is_active' in data:
             course.is_active = bool(data['is_active'])
+        
 
-        # Update metadata
-        course.meta_title = data.get('meta_title')
-        course.meta_keywords = data.get('meta_keywords')
-        course.meta_description = data.get('meta_description')
+        # Update metadata (only when explicitly sent — partial updates must not clear)
+        if 'meta_title' in data:
+            course.meta_title = data.get('meta_title')
+        if 'meta_keywords' in data:
+            course.meta_keywords = data.get('meta_keywords')
+        if 'meta_description' in data:
+            course.meta_description = data.get('meta_description')
 
         # Update extra details
         for field in [
@@ -915,7 +1105,33 @@ def course_update(request, course_id):
         import datetime
         course.updated_at = datetime.datetime.utcnow()
 
-        course.save()
+        duplicate_message, duplicate_field = _course_duplicate_message(
+            course.provider,
+            slug=course.slug,
+            code=course.code,
+            title=course.title,
+            exclude_id=course_id,
+        )
+        if duplicate_message:
+            return duplicate_conflict(duplicate_message, field=duplicate_field)
+
+        try:
+            course.save()
+        except NotUniqueError as exc:
+            return not_unique_conflict(exc, field="slug")
+
+        if _parse_bool(data.get("clear_official_details"), default=False):
+            Course._get_collection().update_one(
+                {"_id": course.id},
+                {"$unset": {k: "" for k in _OFFICIAL_DETAILS_FIELD_KEYS}},
+            )
+
+        if _parse_bool(data.get("clear_exam_details"), default=False):
+            Course._get_collection().update_one(
+                {"_id": course.id},
+                {"$unset": {k: "" for k in _EXAM_DETAILS_FIELD_KEYS}},
+            )
+
         _persist_course_extra_fields(course.id, data)
         course.reload()
 
@@ -931,7 +1147,14 @@ def course_update(request, course_id):
 
     except Course.DoesNotExist:
         return Response({"error": "Course not found"}, status=404)
+    except NotUniqueError as exc:
+        return not_unique_conflict(exc, field="slug")
     except Exception as e:
+        if "duplicate key" in str(e).lower() or "E11000" in str(e):
+            return duplicate_conflict(
+                "This exam already exists for this provider.",
+                field="slug",
+            )
         return Response({"error": str(e)}, status=500)
 
 
@@ -972,6 +1195,14 @@ def courses_by_category(request, category_slug):
         category = Category.objects.get(slug=category_slug)
         courses = Course.objects(category=category, is_active=True).order_by('-created_at')
 
+        limit_param = request.GET.get('limit')
+        if limit_param:
+            try:
+                limit_n = max(1, min(50, int(limit_param)))
+                courses = courses[:limit_n]
+            except (TypeError, ValueError):
+                pass
+
         # ✅ AUTO-SYNC: Ensure practice_exams count is accurate for each course
         for course in courses:
             actual_count = PracticeTest.objects(course=course).count()
@@ -989,16 +1220,90 @@ def courses_by_category(request, category_slug):
 
 
 # ------------------------------------------------------------
+# ✅ PUBLIC: Get courses by provider
+# ------------------------------------------------------------
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@csrf_exempt
+def courses_by_provider(request, provider_slug):
+    try:
+        from providers.models import Provider
+        from practice_tests.models import PracticeTest
+        from urllib.parse import unquote
+
+        provider_slug = unquote(provider_slug).strip()
+        provider = Provider.objects(slug=provider_slug).first()
+        if not provider:
+            provider = Provider.objects(slug__iexact=provider_slug).first()
+        if not provider:
+            return Response({"error": "Provider not found"}, status=404)
+
+        courses = Course.objects(provider=provider, is_active=True).order_by('-created_at')
+
+        limit_param = request.GET.get('limit')
+        if limit_param:
+            try:
+                limit_n = max(1, min(50, int(limit_param)))
+                courses = courses[:limit_n]
+            except (TypeError, ValueError):
+                pass
+
+        for course in courses:
+            actual_count = PracticeTest.objects(course=course).count()
+            if course.practice_exams != actual_count:
+                course.practice_exams = actual_count
+                course.save()
+
+        serializer = CourseSerializer(courses, many=True)
+        return Response(serializer.data)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
+# ------------------------------------------------------------
 # ✅ PUBLIC: Get featured courses for homepage
 # ------------------------------------------------------------
 @api_view(['GET'])
 @permission_classes([AllowAny])
 @csrf_exempt
 def featured_courses(request):
-    """Latest active course from each top certification category for homepage Featured Exams."""
+    """Featured courses for homepage Featured Exams and exam-page Popular Exams.
+
+    Returns only courses marked is_featured in admin (Popular Exam / Featured checkbox).
+    Optional ?fallback=1 restores legacy top-category picks when none are featured.
+    """
     try:
         from practice_tests.models import PracticeTest
         from categories.models import Category
+
+        featured = _get_admin_featured_courses()
+
+        if featured:
+            for course in featured:
+                try:
+                    actual_count = PracticeTest.objects(course=course).count()
+                    if course.practice_exams != actual_count:
+                        course.practice_exams = actual_count
+                        course.save()
+                except Exception:
+                    pass
+
+            serializer = CourseSerializer(featured, many=True)
+            raw_by_id = _bulk_fetch_course_extra_docs(featured)
+            merged = [
+                _merge_course_extra_from_doc(item, raw_by_id.get(item.get("id")))
+                for item in serializer.data
+            ]
+            return Response(merged)
+
+        use_fallback = str(request.GET.get("fallback", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if not use_fallback:
+            return Response([])
 
         def _is_top_certification_category(category):
             value = getattr(category, 'is_top_certification', False)
@@ -1037,7 +1342,12 @@ def featured_courses(request):
                 pass  # Skip sync if it fails, continue with existing count
         
         serializer = CourseSerializer(courses, many=True)
-        return Response(serializer.data)
+        raw_by_id = _bulk_fetch_course_extra_docs(courses)
+        merged = [
+            _merge_course_extra_from_doc(item, raw_by_id.get(item.get("id")))
+            for item in serializer.data
+        ]
+        return Response(merged)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1386,3 +1696,5 @@ def get_pricing_by_slug(request, provider, exam_code):
             "error": str(e),
             "message": "An error occurred while fetching pricing data"
         }, status=500)
+
+

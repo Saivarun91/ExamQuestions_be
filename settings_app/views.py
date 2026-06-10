@@ -5,6 +5,43 @@ from django.views.decorators.csrf import csrf_exempt
 from common.middleware import authenticate, restrict
 from .models import AdminSettings, PrivacyPolicy, TermsOfService, RefundCancellationPolicy, Disclaimer, ContactUs, EditorPolicy, Sitemap, SitemapURL
 
+def _public_settings_payload(settings_obj, contact_obj=None):
+    contact_email = ""
+    contact_phone = ""
+    contact_address = ""
+    contact_website = ""
+
+    if contact_obj:
+        contact_email = getattr(contact_obj, "contact_email", "") or ""
+        contact_phone = getattr(contact_obj, "contact_phone", "") or ""
+        contact_address = getattr(contact_obj, "contact_address", "") or ""
+        contact_website = getattr(contact_obj, "contact_website", "") or ""
+    elif settings_obj:
+        contact_email = getattr(settings_obj, "contact_email", "") or ""
+        contact_phone = getattr(settings_obj, "contact_phone", "") or ""
+        contact_address = getattr(settings_obj, "contact_address", "") or ""
+        contact_website = getattr(settings_obj, "contact_website", "") or ""
+
+    return {
+        "success": True,
+        "site_name": getattr(settings_obj, "site_name", "") or "",
+        "logo_url": getattr(settings_obj, "logo_url", "") or "",
+        "contact_email": contact_email,
+        "contact_phone": contact_phone,
+        "contact_address": contact_address,
+        "contact_website": contact_website,
+        "providers_carousel_speed": getattr(settings_obj, "providers_carousel_speed", 1500),
+        "providers_logo_size": getattr(settings_obj, "providers_logo_size", 80),
+        "social_facebook_url": getattr(settings_obj, "social_facebook_url", "") or "",
+        "social_twitter_url": getattr(settings_obj, "social_twitter_url", "") or "",
+        "social_linkedin_url": getattr(settings_obj, "social_linkedin_url", "") or "",
+        "social_youtube_url": getattr(settings_obj, "social_youtube_url", "") or "",
+        "social_instagram_url": getattr(settings_obj, "social_instagram_url", "") or "",
+        "font_family": getattr(settings_obj, "font_family", "") or "Poppins",
+        "font_size": getattr(settings_obj, "font_size", "") or "16",
+    }
+
+
 @csrf_exempt
 def get_public_settings(request):
     """Get public site settings (site name only, no authentication required)."""
@@ -14,44 +51,15 @@ def get_public_settings(request):
             settings_obj = AdminSettings()
             settings_obj.save()
 
-        # Get contact details from ContactUs model (preferred) or fallback to AdminSettings
         contact_obj = ContactUs.objects.first()
-        contact_email = ""
-        contact_phone = ""
-        contact_address = ""
-        contact_website = ""
-        
-        if contact_obj:
-            contact_email = getattr(contact_obj, 'contact_email', '') or ''
-            contact_phone = getattr(contact_obj, 'contact_phone', '') or ''
-            contact_address = getattr(contact_obj, 'contact_address', '') or ''
-            contact_website = getattr(contact_obj, 'contact_website', '') or ''
-        else:
-            # Fallback to AdminSettings for backward compatibility
-            contact_email = getattr(settings_obj, 'contact_email', '') or ''
-            contact_phone = getattr(settings_obj, 'contact_phone', '') or ''
-            contact_address = getattr(settings_obj, 'contact_address', '') or ''
-            contact_website = getattr(settings_obj, 'contact_website', '') or ''
-
-        return JsonResponse({
-            "success": True, 
-            "site_name": getattr(settings_obj, 'site_name', '') or '',
-            "logo_url": getattr(settings_obj, 'logo_url', '') or '',
-            "contact_email": contact_email,
-            "contact_phone": contact_phone,
-            "contact_address": contact_address,
-            "contact_website": contact_website,
-            "providers_carousel_speed": getattr(settings_obj, 'providers_carousel_speed', 1500),
-            "providers_logo_size": getattr(settings_obj, 'providers_logo_size', 80),
-            "social_facebook_url": getattr(settings_obj, 'social_facebook_url', '') or '',
-            "social_twitter_url": getattr(settings_obj, 'social_twitter_url', '') or '',
-            "social_linkedin_url": getattr(settings_obj, 'social_linkedin_url', '') or '',
-            "social_youtube_url": getattr(settings_obj, 'social_youtube_url', '') or '',
-            "social_instagram_url": getattr(settings_obj, 'social_instagram_url', '') or '',
-            "font_family": getattr(settings_obj, 'font_family', '') or 'Poppins',
-            "font_size": getattr(settings_obj, 'font_size', '') or '16',
-        }, status=200)
+        return JsonResponse(
+            _public_settings_payload(settings_obj, contact_obj),
+            status=200,
+        )
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 
 

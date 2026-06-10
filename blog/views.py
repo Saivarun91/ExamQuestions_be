@@ -33,6 +33,7 @@ def create_blog(request):
             meta_title=data.get("meta_title", ""),
             meta_description=data.get("meta_description", ""),
             meta_keywords=data.get("meta_keywords", ""),
+            faqs=data.get("faqs", []),
         )
 
         blog.save()
@@ -95,6 +96,7 @@ def update_blog(request, blog_id):
             "meta_title": "meta_title",
             "meta_description": "meta_description",
             "meta_keywords": "meta_keywords",
+            "faqs": "faqs",
         }
 
         for frontend_field, model_field in field_map.items():

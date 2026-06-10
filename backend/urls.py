@@ -1,6 +1,14 @@
 from django.contrib import admin
 from django.urls import path, include
-from .sitemap import sitemap_view
+# from .sitemap import sitemap_view
+
+from .sitemap import (
+    sitemap_index,
+    categories_sitemap,
+    providers_sitemap,
+    blogs_sitemap,
+    exams_sitemap,
+)
 
 print("🔥 MAIN URLS LOADED 🔥")
 urlpatterns = [
@@ -28,7 +36,25 @@ urlpatterns = [
     path("api/parsing-suite/", include("parsing_suite.urls")),
     path("api/question-generator/", include("question_generator.urls")),
     path("api/question-validation/", include("question_validation.urls")),
+    path("api/", include("Languages.urls")),
+    # path("sitemap.xml", sitemap_view), 
+    # path("sitemap.xml", sitemap_view, name="sitemap"),
+    path("sitemap.xml", sitemap_index),
+    path("api/sitemap.xml", sitemap_index),
+
+    path("categories-sitemap.xml", categories_sitemap),
+    path("api/categories-sitemap.xml", categories_sitemap),
+
+    path("providers-sitemap.xml", providers_sitemap),
+    path("api/providers-sitemap.xml", providers_sitemap),
+
+    path("blogs-sitemap.xml", blogs_sitemap),
+    path("api/blogs-sitemap.xml", blogs_sitemap),
+
+    path("exams-sitemap.xml", exams_sitemap),
+    path("api/exams-sitemap.xml", exams_sitemap),
+
     # Catch-all pattern last
     path('api/', include('exams.urls')),
-    path("sitemap.xml", sitemap_view), 
+
 ]

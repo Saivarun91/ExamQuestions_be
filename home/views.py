@@ -1399,33 +1399,85 @@ def manage_testimonial_by_id(request, testimonial_id):
 
 
 # =================== BLOG POSTS ===================
+def _serialize_blog_faqs(post):
+    """Return FAQ list from a blog post document."""
+    faqs = getattr(post, "faqs", None) or []
+    if not isinstance(faqs, list):
+        return []
+    result = []
+    for item in faqs:
+        if isinstance(item, dict):
+            result.append({
+                "question": (item.get("question") or "").strip(),
+                "answer": (item.get("answer") or "").strip(),
+            })
+    return result
+
+
+def _serialize_blog_post(post):
+    """Serialize a BlogPost document for public/admin API responses."""
+    return {
+        "id": str(post.id),
+        "title": post.title,
+        "slug": post.slug,
+        "excerpt": post.excerpt or "",
+        "content": getattr(post, "content", "") or "",
+        "category": post.category or "",
+        "image_url": post.thumbnail_url or post.image_url or "",
+        "author": getattr(post, "author", "") or "",
+        "reading_time": getattr(post, "reading_time", "") or "",
+        "meta_title": getattr(post, "meta_title", "") or post.title,
+        "meta_keywords": getattr(post, "meta_keywords", "") or "",
+        "meta_description": getattr(post, "meta_description", "") or post.excerpt or "",
+        "is_featured": post.is_featured or False,
+        "is_active": post.is_active,
+        "faqs": _serialize_blog_faqs(post),
+        "content_slider_type": getattr(post, "content_slider_type", "") or "",
+        "content_slider_ref": getattr(post, "content_slider_ref", "") or "",
+        "created_at": post.created_at.isoformat() if post.created_at else "",
+        "updated_at": post.updated_at.isoformat() if post.updated_at else "",
+    }
+
+
+def _parse_blog_faqs_from_request(faqs_data):
+    """Normalize FAQ payload from admin create/update requests."""
+    if not faqs_data or not isinstance(faqs_data, list):
+        return []
+    result = []
+    for item in faqs_data:
+        if isinstance(item, dict):
+            question = (item.get("question") or "").strip()
+            answer = (item.get("answer") or "").strip()
+            if question:
+                result.append({"question": question, "answer": answer})
+    return result
+
+
 @csrf_exempt
 def get_blog_posts(request):
-    """Get all active and featured blog posts for homepage"""
+    """Get blog posts featured on the homepage (public)."""
     if request.method != 'GET':
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
-        # Get all active and featured blog posts (no limit, show all)
-        posts = BlogPost.objects(is_active=True, is_featured=True).order_by('-created_at')
-        data = []
-        for post in posts:
-            data.append({
-                "id": str(post.id),
-                "title": post.title,
-                "excerpt": post.excerpt or "",
-                "content": post.content or "",  # Include content for detail page
-                "image_url": post.thumbnail_url or post.image_url or "",  # Try both fields
-                "slug": post.slug,
-                "category": post.category or "",
-                "reading_time": getattr(post, 'reading_time', '5 min read'),
-                "created_at": post.created_at.isoformat() if post.created_at else "",
-                "is_featured": post.is_featured,
-                "is_active": post.is_active,
-                "meta_title": getattr(post, 'meta_title', '') or post.title,
-                "meta_description": getattr(post, 'meta_description', '') or post.excerpt
-            })
+        posts = BlogPost.objects(is_featured=True).order_by('-created_at')
+        data = [_serialize_blog_post(post) for post in posts]
+        return JsonResponse({"success": True, "data": data})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({"error": str(e)}, status=500)
 
+
+@csrf_exempt
+def get_all_blog_posts(request):
+    """Get all blog posts for the blog listing page (public)."""
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        posts = BlogPost.objects().order_by('-created_at')
+        data = [_serialize_blog_post(post) for post in posts]
         return JsonResponse({"success": True, "data": data})
     except Exception as e:
         import traceback
@@ -1443,29 +1495,11 @@ def get_blog_post_by_slug(request, slug):
         from urllib.parse import unquote
         slug = unquote(slug).strip()
         # Case-insensitive match: stored slug may differ in casing from URL / listing payload
-        post = BlogPost.objects(slug__iexact=slug, is_active=True).first()
+        post = BlogPost.objects(slug__iexact=slug).first()
         if not post:
             return JsonResponse({"error": "Blog post not found"}, status=404)
-        
-        data = {
-            "id": str(post.id),
-            "title": post.title,
-            "excerpt": post.excerpt or "",
-            "content": getattr(post, 'content', '') or "",
-            "image_url": post.thumbnail_url or post.image_url or "",
-            "slug": post.slug,
-            "category": post.category or "",
-            "reading_time": getattr(post, 'reading_time', '5 min read'),
-            "created_at": post.created_at.isoformat() if post.created_at else "",
-            "updated_at": post.updated_at.isoformat() if post.updated_at else "",
-            "is_featured": post.is_featured,
-            "is_active": post.is_active,
-            "meta_title": getattr(post, 'meta_title', '') or post.title,
-            "meta_description": getattr(post, 'meta_description', '') or post.excerpt,
-            "meta_keywords": getattr(post, 'meta_keywords', '') or ""
-        }
 
-        return JsonResponse({"success": True, "data": data})
+        return JsonResponse({"success": True, "data": _serialize_blog_post(post)})
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1497,7 +1531,10 @@ def manage_blog_posts(request):
                     "created_at": post.created_at.isoformat() if post.created_at else "",
                     "meta_title": getattr(post, 'meta_title', '') or "",
                     "meta_keywords": getattr(post, 'meta_keywords', '') or "",
-                    "meta_description": getattr(post, 'meta_description', '') or ""
+                    "meta_description": getattr(post, 'meta_description', '') or "",
+                    "faqs": _serialize_blog_faqs(post),
+                    "content_slider_type": getattr(post, "content_slider_type", "") or "",
+                    "content_slider_ref": getattr(post, "content_slider_ref", "") or "",
                 })
             return JsonResponse({"success": True, "data": data})
         except Exception as e:
@@ -1528,12 +1565,16 @@ def manage_blog_posts(request):
             post.image_url = data.get('image_url', '')
             post.thumbnail_url = data.get('thumbnail_url', data.get('image_url', ''))
             post.category = data.get('category', '')
-            post.reading_time = data.get('reading_time', '5 min read')
-            post.is_active = data.get('is_active', True)
+            post.is_active = True
             post.is_featured = data.get('is_featured', False)
             post.meta_title = data.get('meta_title', '')
             post.meta_keywords = data.get('meta_keywords', '')
             post.meta_description = data.get('meta_description', '')
+            post.faqs = _parse_blog_faqs_from_request(data.get('faqs'))
+            if "content_slider_type" in data:
+                post.content_slider_type = (data.get("content_slider_type") or "").strip() or None
+            if "content_slider_ref" in data:
+                post.content_slider_ref = (data.get("content_slider_ref") or "").strip() or None
             post.save()
             
             return JsonResponse({
@@ -1568,10 +1609,7 @@ def manage_blog_post_by_id(request, post_id):
                 post.image_url = post.thumbnail_url  # Keep both in sync
             
             post.category = data.get('category', post.category)
-            
-            if 'reading_time' in data:
-                post.reading_time = data.get('reading_time', post.reading_time)
-            
+
             # Update slug if provided or title changed
             if 'slug' in data:
                 post.slug = data['slug']
@@ -1587,11 +1625,17 @@ def manage_blog_post_by_id(request, post_id):
                 post.slug = new_slug
             
             post.content = data.get('content', post.content)
-            post.is_active = data.get('is_active', post.is_active)
+            post.is_active = True
             post.is_featured = data.get('is_featured', post.is_featured)
             post.meta_title = data.get('meta_title', post.meta_title)
             post.meta_keywords = data.get('meta_keywords', post.meta_keywords)
             post.meta_description = data.get('meta_description', post.meta_description)
+            if 'faqs' in data:
+                post.faqs = _parse_blog_faqs_from_request(data.get('faqs'))
+            if "content_slider_type" in data:
+                post.content_slider_type = (data.get("content_slider_type") or "").strip() or None
+            if "content_slider_ref" in data:
+                post.content_slider_ref = (data.get("content_slider_ref") or "").strip() or None
             post.updated_at = datetime.utcnow()
             post.save()
             

@@ -2,6 +2,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
+from mongoengine.errors import NotUniqueError
+from django.utils.text import slugify
 from .models import Provider
 from .serializers import ProviderSerializer
 from bson import ObjectId
@@ -9,7 +11,32 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import HttpResponse, JsonResponse
 from django.conf import settings
 from common.middleware import authenticate, restrict
+from common.duplicate_validation import duplicate_conflict, not_unique_conflict
 import json
+
+
+def _provider_name_taken(name, exclude_id=None):
+    normalized = (name or "").strip()
+    if not normalized:
+        return False
+    existing = Provider.objects(name__iexact=normalized).first()
+    if not existing:
+        return False
+    if exclude_id and str(existing.id) == str(exclude_id):
+        return False
+    return True
+
+
+def _provider_slug_taken(slug, exclude_id=None):
+    normalized = (slug or "").strip().lower()
+    if not normalized:
+        return False
+    existing = Provider.objects(slug__iexact=normalized).first()
+    if not existing:
+        return False
+    if exclude_id and str(existing.id) == str(exclude_id):
+        return False
+    return True
 
 # ✅ List all active providers (Public)
 @api_view(['GET'])
@@ -149,13 +176,28 @@ def admin_provider_create(request):
         elif isinstance(is_active, (int, float)):
             is_active = bool(is_active)
         
+        provider_name = str(data["name"]).strip()
+        provider_slug = slugify(data.get("slug") or provider_name)
+
+        if _provider_name_taken(provider_name):
+            return duplicate_conflict(
+                f'A provider named "{provider_name}" already exists.',
+                field="name",
+            )
+        if _provider_slug_taken(provider_slug):
+            return duplicate_conflict(
+                f'A provider with slug "{provider_slug}" already exists.',
+                field="slug",
+            )
+
         # Create provider
         provider = Provider(
-            name=data['name'],
+            name=provider_name,
             icon=data['icon'],
-            slug=data.get('slug', ''),  # Will auto-generate if empty
+            slug=provider_slug,
             logo_url=data.get('logo_url', ''),  # Cloudinary URL from frontend
             page_title=data.get('page_title', ''),
+            description=data.get('description', ''),
             content=data.get('content', ''),
             faqs=faqs,
             meta_title=data.get('meta_title', ''),
@@ -171,14 +213,21 @@ def admin_provider_create(request):
             provider.logo.put(logo_file, content_type=logo_file.content_type)
             provider.logo_url = None
         
-        provider.save()
-        
+        try:
+            provider.save()
+        except NotUniqueError as exc:
+            return not_unique_conflict(exc, field="name")
+
         serializer = ProviderSerializer(provider, context={'request': request})
         return Response(
             {"success": True, "message": "Provider created successfully", "data": serializer.data},
             status=status.HTTP_201_CREATED
         )
+    except NotUniqueError as exc:
+        return not_unique_conflict(exc, field="name")
     except Exception as e:
+        if "duplicate key" in str(e).lower() or "E11000" in str(e):
+            return duplicate_conflict("This provider already exists.", field="name")
         import traceback
         error_msg = str(e)
         if settings.DEBUG:
@@ -224,13 +273,32 @@ def admin_provider_update(request, provider_id):
                     faqs.append({'question': question, 'answer': answer})
             provider.faqs = faqs
 
+        next_name = provider.name
+        next_slug = provider.slug
+
         # Update fields only if provided
         if 'name' in data:
-            provider.name = data['name']
+            next_name = str(data['name']).strip()
+            provider.name = next_name
         if 'icon' in data:
             provider.icon = data['icon']
         if 'slug' in data:
-            provider.slug = data['slug']
+            next_slug = slugify(data['slug'] or next_name)
+            provider.slug = next_slug
+        elif 'name' in data and not (data.get('slug') or '').strip():
+            next_slug = slugify(next_name)
+            provider.slug = next_slug
+
+        if _provider_name_taken(next_name, exclude_id=provider_id):
+            return duplicate_conflict(
+                f'A provider named "{next_name}" already exists.',
+                field="name",
+            )
+        if _provider_slug_taken(next_slug, exclude_id=provider_id):
+            return duplicate_conflict(
+                f'A provider with slug "{next_slug}" already exists.',
+                field="slug",
+            )
         if 'description' in data:
             provider.description = data['description']
         if 'website_url' in data:
@@ -290,13 +358,20 @@ def admin_provider_update(request, provider_id):
                 provider.logo.put(logo_file, content_type=logo_file.content_type)
                 provider.logo_url = None
         
-        provider.save()
-        
+        try:
+            provider.save()
+        except NotUniqueError as exc:
+            return not_unique_conflict(exc, field="name")
+
         serializer = ProviderSerializer(provider, context={'request': request})
         return Response({"success": True, "message": "Provider updated successfully", "data": serializer.data})
     except Provider.DoesNotExist:
         return Response({"error": "Provider not found"}, status=status.HTTP_404_NOT_FOUND)
+    except NotUniqueError as exc:
+        return not_unique_conflict(exc, field="name")
     except Exception as e:
+        if "duplicate key" in str(e).lower() or "E11000" in str(e):
+            return duplicate_conflict("This provider already exists.", field="name")
         import traceback
         error_msg = str(e)
         if settings.DEBUG:

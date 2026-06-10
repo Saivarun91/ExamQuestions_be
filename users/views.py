@@ -456,8 +456,13 @@ def login_admin(request):
     if not admin.check_password(password):
         return Response({"error": "Invalid password"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Generate JWT
-    token = generate_jwt({"id": str(admin.id), "role": "admin"})
+    # Generate JWT (name/email included for profile when DB is temporarily unavailable)
+    token = generate_jwt({
+        "id": str(admin.id),
+        "role": "admin",
+        "name": admin.name or "Admin",
+        "email": admin.email or "",
+    })
 
     return Response({
         "message": "Admin login successful",

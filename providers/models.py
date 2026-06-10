@@ -20,6 +20,7 @@ class Provider(Document):
 
     # Provider page content fields
     page_title = StringField(default="")
+    description = StringField(default="")
     content = StringField(default="")
     faqs = ListField(DictField(), default=list)
 

@@ -1,6 +1,81 @@
+import os
+import re
+from urllib.parse import urlparse
+
 from rest_framework import serializers
 from .models import Category
 from django.utils.text import slugify
+
+_CATEGORY_IMAGE_PATH_RE = re.compile(
+    r"^/api/categories/([a-fA-F0-9]{24})/image/?$", re.IGNORECASE
+)
+
+
+def _api_base():
+    return (
+        os.environ.get("PUBLIC_API_BASE_URL")
+        or os.environ.get("API_BASE_URL")
+        or ""
+    ).rstrip("/")
+
+
+def _category_image_serve_url(category_id, request=None):
+    api_base = _api_base()
+    if api_base:
+        return f"{api_base}/api/categories/{category_id}/image/"
+    if request:
+        return (
+            f"{request.scheme}://{request.get_host()}"
+            f"/api/categories/{category_id}/image/"
+        )
+    return f"/api/categories/{category_id}/image/"
+
+
+def _category_image_url(instance, request=None):
+    """Return absolute image URL for API clients and Next.js."""
+    category_id = str(instance.id)
+
+    if hasattr(instance, "image") and instance.image:
+        return _category_image_serve_url(category_id, request=request)
+
+    image_url = getattr(instance, "image_url", None) or ""
+    trimmed = str(image_url).strip()
+    if not trimmed:
+        return ""
+
+    path = trimmed
+    if trimmed.startswith("http://") or trimmed.startswith("https://"):
+        try:
+            path = urlparse(trimmed).path or trimmed
+        except Exception:
+            path = trimmed
+
+    if path.startswith("/"):
+        match = _CATEGORY_IMAGE_PATH_RE.match(path)
+        if match:
+            return _category_image_serve_url(match.group(1), request=request)
+
+    if trimmed.startswith("http://") or trimmed.startswith("https://"):
+        return trimmed
+
+    api_base = _api_base()
+    if api_base and trimmed.startswith("/"):
+        return f"{api_base}{trimmed}"
+    if request:
+        return f"{request.scheme}://{request.get_host()}{trimmed}"
+    return trimmed
+
+
+def _category_title_taken(title, exclude_id=None):
+    normalized = (title or "").strip()
+    if not normalized:
+        return False
+    existing = Category.objects(title__iexact=normalized).first()
+    if not existing:
+        return False
+    if exclude_id and str(existing.id) == str(exclude_id):
+        return False
+    return True
 
 def _to_bool(value):
     if isinstance(value, bool):
@@ -26,6 +101,7 @@ class CategorySerializer(serializers.Serializer):
         allow_empty=True,
     )
     icon = serializers.CharField(required=True)
+    image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     slug = serializers.CharField(read_only=True)
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_keywords = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -39,6 +115,9 @@ class CategorySerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         """Properly serialize MongoEngine document"""
+        request = self.context.get("request")
+        image_url = _category_image_url(instance, request=request)
+
         return {
             'id': str(instance.id),
             'name': instance.title,  # Frontend expects 'name'
@@ -48,6 +127,7 @@ class CategorySerializer(serializers.Serializer):
             'content': instance.content or '',
             'faqs': getattr(instance, 'faqs', []) or [],
             'icon': instance.icon,
+            'image_url': image_url,
             'slug': instance.slug,
             'is_active': getattr(instance, 'is_active', True),
             'meta_title': instance.meta_title or '',
@@ -57,6 +137,15 @@ class CategorySerializer(serializers.Serializer):
             'hero_title': getattr(instance, 'hero_title', '') or '',
             'hero_subtitle': getattr(instance, 'hero_subtitle', '') or '',
         }
+
+    def validate_title(self, value):
+        title = (value or "").strip()
+        if not title:
+            raise serializers.ValidationError("Category title is required.")
+        exclude_id = getattr(self.instance, "id", None) if self.instance else None
+        if _category_title_taken(title, exclude_id=exclude_id):
+            raise serializers.ValidationError("This category already exists.")
+        return title
 
     def create(self, validated_data):
         # Generate slug from title if not provided

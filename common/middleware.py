@@ -26,7 +26,9 @@ def authenticate(view_func):
                 # print("payload",payload)
                 request.user = {
                     'id': payload.get('id'),
-                    'role': payload.get('role')
+                    'role': payload.get('role'),
+                    'name': payload.get('name'),
+                    'email': payload.get('email'),
                 }
             except jwt.ExpiredSignatureError:
                 return JsonResponse({'message': 'Token expired'}, status=401)

@@ -5,6 +5,11 @@ import datetime
 class CourseSerializer(serializers.Serializer):
     id = serializers.CharField(read_only=True)
     provider = serializers.CharField(required=False)
+    exam_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
     title = serializers.CharField(required=False)
     code = serializers.CharField(required=False)
     slug = serializers.CharField(required=False)
@@ -19,6 +24,7 @@ class CourseSerializer(serializers.Serializer):
     offer_price = serializers.FloatField(required=False, allow_null=True)
     currency = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     is_featured = serializers.BooleanField(required=False)
+    show_in_official_details = serializers.BooleanField(required=False)
 
     # Exam details fields
     short_description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -114,6 +120,7 @@ class CourseSerializer(serializers.Serializer):
             'provider': provider_value,
             'provider_id': provider_id,
             'provider_slug': provider_slug,
+            'exam_name': getattr(instance, 'exam_name', None),
             'title': getattr(instance, 'title', getattr(instance, 'name', '')),
             'code': getattr(instance, 'code', ''),
             'slug': getattr(instance, 'slug', ''),
@@ -128,7 +135,12 @@ class CourseSerializer(serializers.Serializer):
             'offer_price': getattr(instance, 'offer_price', 0.0),
             'currency': getattr(instance, 'currency', 'INR'),
             'is_featured': getattr(instance, 'is_featured', False),
-            
+            'show_in_official_details': getattr(
+                instance,
+                'show_in_official_details',
+                False
+            ),
+                        
             # Exam details fields
             'short_description': getattr(instance, 'short_description', None),
             'about': getattr(instance, 'about', None),
@@ -152,6 +164,19 @@ class CourseSerializer(serializers.Serializer):
             'practice_page_section_1_content': getattr(instance, 'practice_page_section_1_content', None),
             'practice_page_section_2_heading': getattr(instance, 'practice_page_section_2_heading', None),
             'practice_page_section_2_content': getattr(instance, 'practice_page_section_2_content', None),
+            'official_details_content': getattr(instance, 'official_details_content', None),
+            'official_details_meta_title': getattr(instance, 'official_details_meta_title', None),
+            'official_details_meta_keywords': getattr(instance, 'official_details_meta_keywords', None),
+            'official_details_meta_description': getattr(instance, 'official_details_meta_description', None),
+            'official_details_page_title': getattr(instance, 'official_details_page_title', None),
+            'official_details_url_slug': getattr(instance, 'official_details_url_slug', None),
+            'official_details_stat_exam_code': getattr(instance, 'official_details_stat_exam_code', None),
+            'official_details_stat_duration': getattr(instance, 'official_details_stat_duration', None),
+            'official_details_stat_total_questions': getattr(instance, 'official_details_stat_total_questions', None),
+            'official_details_stat_cost': getattr(instance, 'official_details_stat_cost', None),
+            'official_details_stat_certification_body': getattr(instance, 'official_details_stat_certification_body', None),
+            'official_details_stat_validity': getattr(instance, 'official_details_stat_validity', None),
+            'official_details_faqs': getattr(instance, 'official_details_faqs', None) or [],
             'eligibility': getattr(instance, 'eligibility', None),
             'exam_pattern': getattr(instance, 'exam_pattern', None),
             'pass_rate': getattr(instance, 'pass_rate', None),
@@ -181,6 +206,7 @@ class CourseSerializer(serializers.Serializer):
             'meta_keywords': getattr(instance, 'meta_keywords', None),
             'meta_description': getattr(instance, 'meta_description', None),
             'is_active': getattr(instance, 'is_active', True),
+            'updated_at': getattr(instance, 'updated_at', None),
         }
 
     def _serialize_practice_tests(self, instance):

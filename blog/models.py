@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, DateTimeField
+from mongoengine import Document, StringField, DateTimeField, ListField, DictField
 from datetime import datetime
 
 class Blog(Document):
@@ -15,6 +15,11 @@ class Blog(Document):
     meta_description = StringField(max_length=500)
     meta_keywords = StringField(max_length=255)
 
+    faqs = ListField(
+        DictField(),
+        default=list
+    )
+
     meta = {"collection": "blogs"}
 
     def to_json(self):
@@ -30,4 +35,6 @@ class Blog(Document):
             "meta_title": self.meta_title,
             "meta_description": self.meta_description,
             "meta_keywords": self.meta_keywords,
+            "faqs": self.faqs or [],
+
         }

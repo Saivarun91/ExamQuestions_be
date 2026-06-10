@@ -22,7 +22,10 @@ urlpatterns = [
     path('', views.course_list, name='course_list'),
     path('featured/', views.featured_courses, name='featured_courses'),
     path('category/<str:category_slug>/', views.courses_by_category, name='courses_by_category'),
+    path('provider/<str:provider_slug>/', views.courses_by_provider, name='courses_by_provider'),
 
     # SEO-Friendly exam URL (catch-all - must be last)
     path('exams/<str:course_identifier>/', views.course_detail, name='course_detail'),
+
+    
 ]

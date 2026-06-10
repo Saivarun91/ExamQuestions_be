@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from mongoengine import connect
+# from common.mongo_connection import connect_mongodb
+
 
 # =================== LOAD ENV ===================
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -61,6 +63,7 @@ INSTALLED_APPS = [
     'parsing_suite',
     'question_generator',
     'question_validation',
+    'Languages',
 ]
 
 # =================== MIDDLEWARE ===================
@@ -158,6 +161,7 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # =================== MONGODB ===================
+# connect_mongodb()
 connect(
     db=os.environ.get('MONGO_DB'),
     host=os.environ.get('MONGO_URI'),

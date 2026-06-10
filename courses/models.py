@@ -6,13 +6,16 @@ from providers.models import Provider
 
 class Course(Document):
     # BASIC FIELDS
-    provider = ReferenceField(Provider, required=True)  # Reference to Provider document
+    provider = ReferenceField(Provider, required=False)  # Reference to Provider document (optional)
+    exam_name = StringField(default=None)
+
     title = StringField(required=True)              # AWS Architect, CCNA, etc
     code = StringField(required=True)               # SAA-C03, AZ-104, etc
     slug = StringField(required=True)               # SEO-friendly URL slug
     practice_exams = IntField(default=0)            # Number of practice exams
     questions = IntField(default=0)                 # Number of questions
     badge = StringField(default=None)               # "Updated this week"
+    image_url = StringField(default=None)           # Card / slider image (admin upload)
 
     # Category (optional)
     category = ReferenceField(Category, required=False)  # Reference to Category document
@@ -24,6 +27,11 @@ class Course(Document):
     
     # Featured flag
     is_featured = BooleanField(default=False)       # Show in Featured Exams section
+
+    # Official Details Manager flag
+    show_in_official_details = BooleanField(
+        default=False
+    )
 
     # EXAM DETAILS PAGE FIELDS
     short_description = StringField(default=None)   # Short description for cards
@@ -59,6 +67,31 @@ class Course(Document):
     meta_title = StringField(default=None)
     meta_keywords = StringField(default=None)
     meta_description = StringField(default=None)
+
+    # OFFICIAL DETAILS PAGE FIELDS
+    official_details_content = StringField(default=None)
+    official_details_meta_title = StringField(default=None)
+    official_details_meta_keywords = StringField(default=None)
+    official_details_meta_description = StringField(default=None)
+
+    official_details_page_title = StringField(default=None)
+
+    official_details_url_slug = StringField(
+        default="official-details"
+    )
+
+    # OFFICIAL DETAILS PAGE — TABLE (admin-controlled)
+    official_details_stat_exam_code = StringField(default=None)
+    official_details_stat_duration = StringField(default=None)
+    official_details_stat_total_questions = StringField(default=None)
+    official_details_stat_cost = StringField(default=None)
+    official_details_stat_certification_body = StringField(default=None)
+    official_details_stat_validity = StringField(default=None)
+
+    official_details_faqs = ListField(
+        DictField(),
+        default=list
+    )
 
     # SYSTEM FIELDS
     is_active = BooleanField(default=True)

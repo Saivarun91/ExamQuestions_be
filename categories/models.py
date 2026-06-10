@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, ListField, DictField, BooleanField
+from mongoengine import Document, StringField, ListField, DictField, BooleanField, FileField
 from django.utils.text import slugify
 
 class Category(Document):
@@ -8,6 +8,8 @@ class Category(Document):
     content = StringField()
     faqs = ListField(DictField())
     icon = StringField(required=True)  # Cloud, Shield, etc.
+    image_url = StringField(required=False, default=None)  # Category image shown on UI
+    image = FileField(required=False)  # Uploaded category image (served via API)
     slug = StringField(required=True, unique=True)
 
     # SEO fields
