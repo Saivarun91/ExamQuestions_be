@@ -19,6 +19,7 @@ class Category(Document):
     is_top_certification = BooleanField(default=False)
 
     # Hero section (category detail page)
+    page_title = StringField()
     hero_title = StringField()
     hero_subtitle = StringField()
 

@@ -144,6 +144,7 @@ def _get_category_keys():
             _add_text(keys, f"{prefix}.title", category.title)
             _add_text(keys, f"{prefix}.description", category.description)
             _add_text(keys, f"{prefix}.content", category.content)
+            _add_text(keys, f"{prefix}.page_title", getattr(category, "page_title", None))
             _add_text(keys, f"{prefix}.hero_title", category.hero_title)
             _add_text(keys, f"{prefix}.hero_subtitle", category.hero_subtitle)
             _add_text(keys, f"{prefix}.meta_title", category.meta_title)

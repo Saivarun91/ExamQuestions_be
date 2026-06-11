@@ -107,6 +107,7 @@ class CategorySerializer(serializers.Serializer):
     meta_keywords = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     meta_description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     is_top_certification = serializers.BooleanField(required=False, default=False)
+    page_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     hero_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     hero_subtitle = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
@@ -134,6 +135,7 @@ class CategorySerializer(serializers.Serializer):
             'meta_keywords': instance.meta_keywords or '',
             'meta_description': instance.meta_description or '',
             'is_top_certification': _to_bool(getattr(instance, 'is_top_certification', False)),
+            'page_title': getattr(instance, 'page_title', '') or '',
             'hero_title': getattr(instance, 'hero_title', '') or '',
             'hero_subtitle': getattr(instance, 'hero_subtitle', '') or '',
         }

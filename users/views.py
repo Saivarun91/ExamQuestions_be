@@ -34,7 +34,10 @@ SECRET_KEY = settings.SECRET_KEY
 def generate_jwt(payload):
     """Generate a JWT token with a 7-day expiry."""
     payload["exp"] = datetime.utcnow() + timedelta(days=7)
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return token
 
 
 # ================= reCAPTCHA HELPER =================
@@ -173,8 +176,8 @@ def register_user(request):
 def login_user(request):
     try:
         data = request.data
-        email = data.get("email")
-        password = data.get("password")
+        email = (data.get("email") or "").strip()
+        password = data.get("password") or ""
         
         if not email or not password:
             return Response(
@@ -182,20 +185,12 @@ def login_user(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        user = User.objects(email=email).first()
-        if not user:
-            print("user not found")
+        user = User.objects(email__iexact=email).first()
+        if not user or not user.check_password(password):
             return Response(
                 {"error": "Invalid email or password"},
-                status=status.HTTP_401_UNAUTHORIZED
-        )
-
-        if not user.check_password(password):
-            print("password not matched")
-            return Response(
-                {"error": "Invalid email or password"},
-                status=status.HTTP_401_UNAUTHORIZED
-        )
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # ✅ Generate consistent token
         token = generate_jwt({"id": str(user.id), "role": user.role})
