@@ -41,8 +41,116 @@ def _resolve_provider(provider_input):
         raise ValueError(f"Provider '{provider_input}' not found")
 
 
-def _course_duplicate_message(provider, slug=None, code=None, title=None, exclude_id=None):
-    """Return a user-facing duplicate message if an exam/course already exists."""
+def _strip_html_text(value):
+    text = re.sub(r"<[^>]*>", "", str(value or ""))
+    return text.replace("&nbsp;", " ").strip()
+
+
+def _course_field_text(course=None, extra_doc=None, data=None, field_name=""):
+    if data and field_name in data:
+        return _strip_html_text(data.get(field_name))
+    if extra_doc and field_name in extra_doc:
+        return _strip_html_text(extra_doc.get(field_name))
+    if course is not None:
+        return _strip_html_text(getattr(course, field_name, None))
+    return ""
+
+
+def _course_has_exam_details(course=None, extra_doc=None, data=None):
+    """Mirror frontend courseHasExamDetails — exam page content, not official-only."""
+    for field in ("about", "page_heading", "exam_details", "details", "meta_title"):
+        if _course_field_text(course, extra_doc, data, field):
+            return True
+
+    topics = (data or {}).get("topics")
+    if topics is None and course is not None:
+        topics = getattr(course, "topics", None)
+    if isinstance(topics, list):
+        for topic in topics:
+            if isinstance(topic, dict) and _strip_html_text(topic.get("name")):
+                return True
+
+    testimonials = (data or {}).get("testimonials")
+    if testimonials is None and course is not None:
+        testimonials = getattr(course, "testimonials", None)
+    if isinstance(testimonials, list):
+        for item in testimonials:
+            if isinstance(item, dict) and _strip_html_text(item.get("name")):
+                return True
+
+    faqs = (data or {}).get("faqs")
+    if faqs is None and course is not None:
+        faqs = getattr(course, "faqs", None)
+    if isinstance(faqs, list):
+        for faq in faqs:
+            if isinstance(faq, dict) and _strip_html_text(faq.get("question")):
+                return True
+
+    return False
+
+
+def _has_distinct_exam_details_slug(course=None, extra_doc=None, data=None, slug=None):
+    exam_slug = str(
+        slug
+        or (data or {}).get("slug")
+        or getattr(course, "slug", None)
+        or ""
+    ).strip()
+    official_slug = str(
+        (data or {}).get("official_details_url_slug")
+        or (extra_doc or {}).get("official_details_url_slug")
+        or getattr(course, "official_details_url_slug", None)
+        or ""
+    ).strip()
+    return bool(exam_slug and official_slug and exam_slug != official_slug)
+
+
+def _is_official_details_only_course(
+    course=None,
+    extra_doc=None,
+    data=None,
+    slug=None,
+    show_in_official_details=None,
+):
+    """Mirror frontend isOfficialDetailsOnlyCourse."""
+    if show_in_official_details is None:
+        if data and "show_in_official_details" in data:
+            show_official = _parse_bool(data.get("show_in_official_details"), default=False)
+        elif course is not None:
+            show_official = _parse_bool(
+                getattr(course, "show_in_official_details", False),
+                default=False,
+            )
+        else:
+            show_official = False
+    else:
+        show_official = _parse_bool(show_in_official_details, default=False)
+
+    if not show_official:
+        return False
+    if _course_has_exam_details(course, extra_doc, data):
+        return False
+    if _has_distinct_exam_details_slug(course, extra_doc, data, slug):
+        return False
+    return True
+
+
+def _course_duplicate_message(
+    provider,
+    slug=None,
+    code=None,
+    title=None,
+    exclude_id=None,
+    course=None,
+    data=None,
+    extra_doc=None,
+    show_in_official_details=None,
+):
+    """Return a user-facing duplicate message if an exam/course already exists.
+
+    Official-details-only pages and provider exam listings may share the same
+    code/slug/title for one provider (separate Course records).
+    """
     if provider:
         queryset = Course.objects(provider=provider)
         scope = " for this provider"
@@ -52,9 +160,24 @@ def _course_duplicate_message(provider, slug=None, code=None, title=None, exclud
     if exclude_id and ObjectId.is_valid(str(exclude_id)):
         queryset = queryset.filter(id__ne=ObjectId(str(exclude_id)))
 
+    incoming_official_only = _is_official_details_only_course(
+        course=course,
+        extra_doc=extra_doc,
+        data=data,
+        slug=slug or (data or {}).get("slug") or getattr(course, "slug", None),
+        show_in_official_details=show_in_official_details,
+    )
+
+    def _is_same_listing_bucket(existing):
+        extra_doc = _fetch_course_extra_doc(existing.id)
+        existing_official_only = _is_official_details_only_course(
+            existing, extra_doc=extra_doc
+        )
+        return existing_official_only == incoming_official_only
+
     if slug:
         existing = queryset.filter(slug__iexact=(slug or "").strip().lower()).first()
-        if existing:
+        if existing and _is_same_listing_bucket(existing):
             return (
                 f'An exam with slug "{slug}" already exists{scope}.',
                 "slug",
@@ -62,7 +185,7 @@ def _course_duplicate_message(provider, slug=None, code=None, title=None, exclud
 
     if code:
         existing = queryset.filter(code__iexact=(code or "").strip()).first()
-        if existing:
+        if existing and _is_same_listing_bucket(existing):
             return (
                 f'An exam with code "{code}" already exists{scope}.',
                 "code",
@@ -70,7 +193,7 @@ def _course_duplicate_message(provider, slug=None, code=None, title=None, exclud
 
     if title:
         existing = queryset.filter(title__iexact=(title or "").strip()).first()
-        if existing:
+        if existing and _is_same_listing_bucket(existing):
             return (
                 f'An exam titled "{title}" already exists{scope}.',
                 "title",
@@ -377,6 +500,11 @@ def course_create(request):
             slug=slug,
             code=code,
             title=title,
+            data=data,
+            show_in_official_details=_parse_bool(
+                data.get("show_in_official_details"),
+                default=False,
+            ),
         )
         if duplicate_message:
             return duplicate_conflict(duplicate_message, field=duplicate_field)
@@ -1105,12 +1233,16 @@ def course_update(request, course_id):
         import datetime
         course.updated_at = datetime.datetime.utcnow()
 
+        extra_doc = _fetch_course_extra_doc(course.id)
         duplicate_message, duplicate_field = _course_duplicate_message(
             course.provider,
             slug=course.slug,
             code=course.code,
             title=course.title,
             exclude_id=course_id,
+            course=course,
+            data=data,
+            extra_doc=extra_doc,
         )
         if duplicate_message:
             return duplicate_conflict(duplicate_message, field=duplicate_field)

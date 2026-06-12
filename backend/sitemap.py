@@ -230,6 +230,9 @@
 
 
 import datetime
+import os
+import re
+from urllib.parse import urlparse
 
 from django.http import HttpResponse
 from django.urls import path
@@ -242,9 +245,53 @@ from providers.models import Provider
 from courses.models import Course
 from home.models import BlogPost
 
+FRONTEND_SITE_ORIGIN = "https://allexamquestions.com"
+LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "0.0.0.0", "[::1]"}
+API_HOSTNAMES = {"backendapi.allexamquestions.com"}
+
+
+def _hostname_from_host(host):
+    return (host or "").split(",")[0].strip().split(":")[0].lower()
+
+
+def _is_non_public_sitemap_host(hostname):
+    if not hostname:
+        return True
+    if hostname in LOCAL_HOSTNAMES:
+        return True
+    if hostname.endswith(".local"):
+        return True
+    if hostname in API_HOSTNAMES:
+        return True
+    return False
+
+
+def _configured_frontend_origin():
+    for key in ("SITE_URL", "FRONTEND_URL", "NEXT_PUBLIC_SITE_URL"):
+        raw = (os.environ.get(key) or "").strip().rstrip("/")
+        if not raw:
+            continue
+        try:
+            parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+            hostname = (parsed.hostname or "").lower()
+            if hostname and not _is_non_public_sitemap_host(hostname):
+                scheme = parsed.scheme or "https"
+                netloc = parsed.netloc or hostname
+                return f"{scheme}://{netloc}".rstrip("/")
+        except Exception:
+            continue
+    return ""
+
 
 def get_base_url(request):
-    return f"{request.scheme}://{request.get_host()}"
+    """Public frontend origin for sitemap <loc> URLs (never localhost/API host)."""
+    configured = _configured_frontend_origin()
+    if configured:
+        return configured
+
+    # Sitemap entries are always public frontend routes — never derive from
+    # the API request host (localhost, internal IP, or backendapi subdomain).
+    return FRONTEND_SITE_ORIGIN
 
 
 def to_aware_datetime(dt):
@@ -281,6 +328,84 @@ def max_lastmod_from_queryset(queryset, *fields):
                 if latest is None or aware > latest:
                     latest = aware
     return format_lastmod(latest)
+
+
+def _trim_public_path_segment(value=""):
+    return str(value or "").strip().strip("/")
+
+
+def _trim_official_details_path_segment(value=""):
+    segment = _trim_public_path_segment(value)
+    return segment or "official-details"
+
+
+def _official_content_is_meaningful(raw_content):
+    normalized = str(raw_content or "").strip()
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    if lowered in {"null", "undefined"}:
+        return False
+
+    text_only = re.sub(r"<style[\s\S]*?</style>", " ", lowered, flags=re.I)
+    text_only = re.sub(r"<script[\s\S]*?</script>", " ", text_only, flags=re.I)
+    text_only = re.sub(r"<[^>]*>", " ", text_only)
+    text_only = text_only.replace("&nbsp;", " ")
+    text_only = re.sub(r"\s+", " ", text_only).strip()
+    return len(text_only) > 0
+
+
+def _has_official_details_data(exam):
+    if _official_content_is_meaningful(
+        getattr(exam, "official_details_content", None)
+    ):
+        return True
+
+    faqs = getattr(exam, "official_details_faqs", None) or []
+    if any(
+        isinstance(faq, dict) and str(faq.get("question", "")).strip()
+        for faq in faqs
+    ):
+        return True
+
+    stat_fields = (
+        "official_details_stat_exam_code",
+        "official_details_stat_duration",
+        "official_details_stat_total_questions",
+        "official_details_stat_cost",
+        "official_details_stat_certification_body",
+        "official_details_stat_validity",
+    )
+    return any(
+        str(getattr(exam, field, None) or "").strip() for field in stat_fields
+    )
+
+
+def _get_official_details_path(exam_slug, url_slug):
+    base = _trim_public_path_segment(exam_slug)
+    segment = _trim_official_details_path_segment(url_slug)
+    if base:
+        return f"/{base}/{segment}"
+    return f"/{segment}"
+
+
+def _build_official_details_url(exam):
+    """
+    Match frontend officialDetailsUrl:
+    - custom admin slug -> /{official_details_url_slug}
+    - otherwise -> /{exam_slug}/{official_details_url_slug|official-details}
+    """
+    exam_slug = _trim_public_path_segment(getattr(exam, "slug", None) or "")
+    official_public_slug = _trim_public_path_segment(
+        getattr(exam, "official_details_url_slug", None) or ""
+    )
+    if official_public_slug:
+        return f"/{official_public_slug}"
+    return _get_official_details_path(
+        exam_slug,
+        getattr(exam, "official_details_url_slug", None) or "official-details",
+    )
 
 
 # =========================================================
@@ -391,12 +516,24 @@ def blogs_sitemap(request):
 
 
 # =========================================================
-# EXAMS SITEMAP
+# EXAMS SITEMAP (official-details URLs match admin / frontend)
 # =========================================================
 def exams_sitemap(request):
 
     urls = []
+    seen_locs = set()
     base_url = get_base_url(request)
+
+    def add_url(loc, lastmod, changefreq, priority):
+        if loc in seen_locs:
+            return
+        seen_locs.add(loc)
+        urls.append({
+            "loc": loc,
+            "lastmod": lastmod,
+            "changefreq": changefreq,
+            "priority": priority,
+        })
 
     for exam in Course.objects.filter(is_active=True):
 
@@ -406,20 +543,22 @@ def exams_sitemap(request):
         if exam_slug:
 
             # Main exam page
-            urls.append({
-                "loc": f"{base_url}/{exam_slug}",
-                "lastmod": lastmod,
-                "changefreq": "weekly",
-                "priority": "0.9",
-            })
+            add_url(
+                f"{base_url}/{exam_slug}",
+                lastmod,
+                "weekly",
+                "0.9",
+            )
 
-            # Official details page
-            urls.append({
-                "loc": f"{base_url}/{exam_slug}/official-details",
-                "lastmod": lastmod,
-                "changefreq": "weekly",
-                "priority": "0.85",
-            })
+            # Official details page (same URL shape as admin / frontend)
+            if _has_official_details_data(exam):
+                official_path = _build_official_details_url(exam)
+                add_url(
+                    f"{base_url}{official_path}",
+                    lastmod,
+                    "weekly",
+                    "0.85",
+                )
 
     return HttpResponse(render_urlset(urls), content_type="application/xml")
 
