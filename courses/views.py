@@ -353,6 +353,127 @@ def _persist_course_extra_fields(course_oid, data):
     Course._get_collection().update_one({"_id": course_oid}, {"$set": extra_set})
 
 
+def _official_content_is_meaningful(raw_content):
+    normalized = str(raw_content or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered in ("null", "undefined"):
+        return False
+    text_only = re.sub(r"<style[\s\S]*?</style>", " ", lowered, flags=re.I)
+    text_only = re.sub(r"<script[\s\S]*?</script>", " ", text_only, flags=re.I)
+    text_only = re.sub(r"<[^>]*>", " ", text_only)
+    text_only = text_only.replace("&nbsp;", " ")
+    text_only = re.sub(r"\s+", " ", text_only).strip()
+    return len(text_only) > 0
+
+
+def _has_official_details_data(course, extra_doc=None):
+    """Mirror frontend hasOfficialDetailsData."""
+    content = ""
+    if extra_doc and "official_details_content" in extra_doc:
+        content = extra_doc.get("official_details_content") or ""
+    elif course is not None:
+        content = getattr(course, "official_details_content", "") or ""
+
+    faqs = []
+    if extra_doc and extra_doc.get("official_details_faqs"):
+        faqs = extra_doc.get("official_details_faqs") or []
+    elif course is not None:
+        faqs = getattr(course, "official_details_faqs", None) or []
+    if not isinstance(faqs, list):
+        faqs = []
+    faqs = [
+        f for f in faqs
+        if isinstance(f, dict) and str(f.get("question") or "").strip()
+    ]
+
+    stat_fields = (
+        "official_details_stat_exam_code",
+        "official_details_stat_duration",
+        "official_details_stat_total_questions",
+        "official_details_stat_cost",
+        "official_details_stat_certification_body",
+        "official_details_stat_validity",
+    )
+    has_stat = False
+    for field in stat_fields:
+        val = ""
+        if extra_doc and field in extra_doc:
+            val = extra_doc.get(field)
+        elif course is not None:
+            val = getattr(course, field, None)
+        if str(val or "").strip():
+            has_stat = True
+            break
+
+    return _official_content_is_meaningful(content) or len(faqs) > 0 or has_stat
+
+
+def _find_official_details_sibling(course):
+    """Find another course (same provider + code) that holds official details."""
+    if not course or not course.code:
+        return None, None
+
+    code = str(course.code).strip()
+    if not code:
+        return None, None
+
+    query = Course.objects(
+        code__iexact=code,
+        id__ne=course.id,
+        is_active=True,
+    )
+    if course.provider:
+        query = query.filter(provider=course.provider)
+
+    for sibling in query:
+        sibling_raw = _fetch_course_extra_doc(sibling.id)
+        if _has_official_details_data(sibling, sibling_raw):
+            return sibling, sibling_raw
+    return None, None
+
+
+def _merge_linked_official_details_response(serialized, raw, course):
+    """Attach official-details fields from a sibling course when this record has none."""
+    if _has_official_details_data(course, raw):
+        return serialized, raw
+
+    sibling, sibling_raw = _find_official_details_sibling(course)
+    if not sibling:
+        return serialized, raw
+
+    out = dict(serialized)
+    merged_raw = dict(raw or {})
+
+    for field in _OFFICIAL_DETAILS_FIELD_KEYS:
+        val = None
+        if sibling_raw and field in sibling_raw:
+            val = sibling_raw[field]
+        elif hasattr(sibling, field):
+            val = getattr(sibling, field, None)
+        if val is None:
+            continue
+        if field in _COURSE_EXTRA_MONGO_FIELDS:
+            merged_raw[field] = val
+        out[field] = val
+
+    sibling_slug = str(getattr(sibling, "slug", "") or "").strip()
+    url_slug = str(
+        merged_raw.get("official_details_url_slug")
+        or getattr(sibling, "official_details_url_slug", None)
+        or ""
+    ).strip()
+    if (not url_slug or url_slug.lower() == "official-details") and sibling_slug:
+        merged_raw["official_details_url_slug"] = sibling_slug
+        out["official_details_url_slug"] = sibling_slug
+
+    if _parse_bool(getattr(sibling, "show_in_official_details", False), default=False):
+        out["show_in_official_details"] = True
+
+    return out, merged_raw
+
+
 def _bulk_fetch_course_extra_docs(courses):
     ids = [c.id for c in courses]
     if not ids:
@@ -928,7 +1049,10 @@ def course_detail(request, course_identifier):
 
         serializer = CourseSerializer(course)
         raw = _fetch_course_extra_doc(course.id)
-        return Response(_merge_course_extra_from_doc(serializer.data, raw))
+        merged_data, merged_raw = _merge_linked_official_details_response(
+            serializer.data, raw, course
+        )
+        return Response(_merge_course_extra_from_doc(merged_data, merged_raw))
 
     except Course.DoesNotExist:
         return Response({"error": "Course not found"}, status=404)
