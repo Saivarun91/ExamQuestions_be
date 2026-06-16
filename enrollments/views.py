@@ -1218,6 +1218,12 @@ import hmac
 from django.conf import settings
 from .payment_models import Payment
 from datetime import datetime, date, timedelta
+from common.currency_utils import (
+    resolve_payment_currency,
+    to_smallest_unit,
+    format_min_purchase_message,
+    get_currency_symbol,
+)
 
 @csrf_exempt
 @authenticate
@@ -1987,7 +1993,13 @@ def create_pricing_plan_order(request):
                             else:
                                 return JsonResponse({
                                     "success": False,
-                                    "message": f"Minimum purchase amount of ₹{coupon.min_purchase} required for this coupon"
+                                    "message": format_min_purchase_message(
+                                        resolve_payment_currency(
+                                            data.get('currency'),
+                                            getattr(course, 'currency', None)
+                                        ),
+                                        coupon.min_purchase
+                                    )
                                 }, status=400)
                         else:
                             return JsonResponse({
@@ -2017,11 +2029,15 @@ def create_pricing_plan_order(request):
                 "message": "Invalid amount. Amount must be greater than 0."
             }, status=400)
         
-        # Create order
-        amount_in_paise = int(round(final_amount * 100))
-        if amount_in_paise < 100:
-            amount_in_paise = 100
-            final_amount = 1.0
+        payment_currency = resolve_payment_currency(
+            data.get('currency'),
+            getattr(course, 'currency', None)
+        )
+
+        # Create order in smallest currency unit (paise/cents)
+        amount_in_smallest, adjusted_amount = to_smallest_unit(final_amount, payment_currency)
+        if adjusted_amount != final_amount:
+            final_amount = adjusted_amount
         
         # Generate receipt
         import re
@@ -2035,11 +2051,11 @@ def create_pricing_plan_order(request):
             receipt = f"PRC{timestamp_str}"
             receipt = receipt[:40]
         
-        amount_in_paise = int(amount_in_paise)
+        amount_in_smallest = int(amount_in_smallest)
         
         order_data = {
-            "amount": amount_in_paise,
-            "currency": "INR",
+            "amount": amount_in_smallest,
+            "currency": payment_currency,
             "receipt": receipt,
             "notes": {
                 "user_id": str(user_id),
@@ -2051,10 +2067,12 @@ def create_pricing_plan_order(request):
         }
         
         try:
-            if amount_in_paise < 100:
+            min_smallest = 50 if payment_currency == 'USD' else 100
+            if amount_in_smallest < min_smallest:
+                min_label = f"{get_currency_symbol(payment_currency)}0.50" if payment_currency == 'USD' else f"{get_currency_symbol(payment_currency)}1.00"
                 return JsonResponse({
                     "success": False, 
-                    "message": "Amount must be at least ₹1.00"
+                    "message": f"Amount must be at least {min_label}"
                 }, status=400)
             
             razorpay_order = razorpay_client.order.create(data=order_data)
@@ -2096,7 +2114,7 @@ def create_pricing_plan_order(request):
             user_id=user_id,
             razorpay_order_id=razorpay_order['id'],
             amount=final_amount,  # Use final amount after discount
-            currency="INR",
+            currency=payment_currency,
             status="pending"
         )
         payment.save()
@@ -2109,19 +2127,19 @@ def create_pricing_plan_order(request):
 
         print(f"Payment record created: payment_id={payment.id}, order_id={razorpay_order['id']}, amount={final_amount}, discount={discount_amount}")
 
-        order_amount = int(razorpay_order.get('amount', amount_in_paise))
+        order_amount = int(razorpay_order.get('amount', amount_in_smallest))
         
         response_data = {
             "success": True,
             "order_id": str(razorpay_order['id']),
             "amount": order_amount,
-            "currency": str(razorpay_order.get('currency', 'INR')),
+            "currency": str(razorpay_order.get('currency', payment_currency)),
             "key_id": str(settings.RAZORPAY_KEY_ID),
             "payment_id": str(payment.id),
             "final_amount": final_amount
         }
         
-        print(f"Razorpay order response: order_id={response_data['order_id']}, amount={response_data['amount']} paise")
+        print(f"Razorpay order response: order_id={response_data['order_id']}, amount={response_data['amount']} smallest-unit")
         
         return JsonResponse(response_data, status=200)
 
