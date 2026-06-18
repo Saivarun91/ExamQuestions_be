@@ -13,11 +13,12 @@ from django.http import HttpResponse, JsonResponse
 from django.conf import settings
 from common.middleware import authenticate, restrict
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
+from common.text_limits import clamp_to_word_limit
 import json
 
 
 def _clamp_provider_description(value):
-    return str(value or "")[:50]
+    return clamp_to_word_limit(value)
 
 
 def _provider_name_taken(name, exclude_id=None):

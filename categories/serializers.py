@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from rest_framework import serializers
 from .models import Category
 from django.utils.text import slugify
+from common.text_limits import clamp_to_word_limit
 
 _CATEGORY_IMAGE_PATH_RE = re.compile(
     r"^/api/categories/([a-fA-F0-9]{24})/image/?$", re.IGNORECASE
@@ -93,7 +94,7 @@ class CategorySerializer(serializers.Serializer):
     id = serializers.SerializerMethodField()
     title = serializers.CharField(required=True)
     main_category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    description = serializers.CharField(required=False, allow_blank=True, max_length=50)
+    description = serializers.CharField(required=False, allow_blank=True, max_length=2000)
     content = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     faqs = serializers.ListField(
         child=serializers.DictField(),
@@ -150,7 +151,7 @@ class CategorySerializer(serializers.Serializer):
         return title
 
     def validate_description(self, value):
-        return str(value or "")[:50]
+        return clamp_to_word_limit(value)
 
     def create(self, validated_data):
         # Generate slug from title if not provided

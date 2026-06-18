@@ -1,11 +1,12 @@
 from rest_framework import serializers
+from common.text_limits import clamp_to_word_limit
 
 class ProviderSerializer(serializers.Serializer):
     id = serializers.CharField(read_only=True)
     name = serializers.CharField(required=True)
     icon = serializers.CharField(required=True)
     slug = serializers.CharField(required=False)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2000)
     website_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     logo_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -21,6 +22,9 @@ class ProviderSerializer(serializers.Serializer):
     order = serializers.IntegerField(required=False)
     is_active = serializers.BooleanField(required=False)
     show_in_popular_providers = serializers.BooleanField(required=False)
+
+    def validate_description(self, value):
+        return clamp_to_word_limit(value)
 
     def to_representation(self, instance):
         """Convert ObjectId to string for JSON serialization"""
