@@ -6,6 +6,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from bson import ObjectId
 from .models import Review, Coupon
+from .coupon_utils import user_has_used_coupon, mark_coupon_used_by_user
 from users.models import User
 from categories.models import Category
 from courses.models import Course
@@ -555,28 +556,11 @@ def verify_coupon(request):
         if coupon.valid_from > now:
             return JsonResponse({"success": False, "message": "Coupon is not yet valid"}, status=400)
 
-        # Check per-user usage (one coupon per user)
-        if user_id:
-            user_object_id = ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id
-            # Convert all items in used_by to ObjectId for consistent comparison
-            used_by_object_ids = []
-            for used_user_id in coupon.used_by:
-                if ObjectId.is_valid(used_user_id):
-                    used_by_object_ids.append(ObjectId(used_user_id))
-                else:
-                    used_by_object_ids.append(used_user_id)
-            
-            # Check if user has already used this coupon (using string comparison for reliability)
-            user_already_used = False
-            user_id_str = str(user_object_id)
-            for used_id in used_by_object_ids:
-                if str(used_id) == user_id_str:
-                    user_already_used = True
-                    break
-            
-            if user_already_used:
+        # Check per-user usage (one-time coupons only; common coupons work on all exams)
+        if user_id and not coupon.is_common:
+            if user_has_used_coupon(coupon, user_id):
                 return JsonResponse({"success": False, "message": "You have already used this coupon code"}, status=400)
-        else:
+        elif not user_id:
             # For non-authenticated users, check old is_used flag (backward compatibility)
             if coupon.is_used and not coupon.is_common:
                 return JsonResponse({"success": False, "message": "This coupon has already been used"}, status=400)

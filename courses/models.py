@@ -62,6 +62,7 @@ class Course(Document):
     pricing_testimonials = ListField(DictField(), default=list) # Testimonials specific to pricing page
     pricing_faqs = ListField(DictField(), default=list)         # FAQs specific to pricing page
     pricing_comparison = ListField(DictField(), default=list)   # Free vs Paid comparison table (feature, free, paid)
+    gst_percentage = FloatField(default=0.0)                    # GST % for India billing (admin-configured)
 
     # SEO FIELDS
     meta_title = StringField(default=None)

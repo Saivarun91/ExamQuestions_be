@@ -18,6 +18,7 @@ import jwt
 from bson import ObjectId
 from django.conf import settings
 from users.authentication import authenticate  # custom decorator
+from users.auth_helpers import authenticate_user_or_admin, normalize_login_email, normalize_login_password
 from common.middleware import restrict
 import urllib.request
 import urllib.parse
@@ -176,37 +177,68 @@ def register_user(request):
 def login_user(request):
     try:
         data = request.data
-        email = (data.get("email") or "").strip()
-        password = data.get("password") or ""
+        email = normalize_login_email(data.get("email"))
+        password = normalize_login_password(data.get("password"))
         
         if not email or not password:
             return Response(
                 {"error": "Email and password are required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        user = User.objects(email__iexact=email).first()
-        if not user or not user.check_password(password):
+
+        auth_result = authenticate_user_or_admin(email, password)
+        if not auth_result:
             return Response(
                 {"error": "Invalid email or password"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # ✅ Generate consistent token
-        token = generate_jwt({"id": str(user.id), "role": user.role})
+        if auth_result.get("inactive_admin"):
+            return Response(
+                {"error": "This admin account is inactive"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
+        account_type = auth_result["account_type"]
+        account = auth_result["account"]
+
+        if account_type == "admin":
+            token = generate_jwt({
+                "id": str(account.id),
+                "role": "admin",
+                "name": account.name or "Admin",
+                "email": account.email or "",
+            })
+            return Response(
+                {
+                    "success": True,
+                    "message": "Login successful",
+                    "token": token,
+                    "user": {
+                        "id": str(account.id),
+                        "fullname": account.name,
+                        "email": account.email,
+                        "role": "admin",
+                        "phone_number": "",
+                        "location": "",
+                    },
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        token = generate_jwt({"id": str(account.id), "role": account.role})
         return Response(
             {
                 "success": True,
                 "message": "Login successful",
                 "token": token,
                 "user": {
-                    "id": str(user.id),
-                    "fullname": user.fullname,
-                    "email": user.email,
-                    "role": user.role,
-                    "phone_number": getattr(user, "phone_number", ""),
-                    "location": getattr(user, "location", ""),
+                    "id": str(account.id),
+                    "fullname": account.fullname,
+                    "email": account.email,
+                    "role": account.role,
+                    "phone_number": getattr(account, "phone_number", ""),
+                    "location": getattr(account, "location", ""),
                 },
             },
             status=status.HTTP_200_OK,
@@ -438,35 +470,51 @@ def register_admin(request):
 # ------------------ Admin Login ------------------
 @api_view(["POST"])
 def login_admin(request):
-    email = request.data.get("email")
-    password = request.data.get("password")
+    email = normalize_login_email(request.data.get("email"))
+    password = normalize_login_password(request.data.get("password"))
 
     if not email or not password:
         return Response({"error": "Email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    admin = Admin.objects(email=email).first()
-    if not admin:
-        return Response({"error": "Admin not found"}, status=status.HTTP_404_NOT_FOUND)
+    auth_result = authenticate_user_or_admin(email, password)
+    if not auth_result:
+        return Response({"error": "Invalid email or password"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if not admin.check_password(password):
-        return Response({"error": "Invalid password"}, status=status.HTTP_401_UNAUTHORIZED)
+    if auth_result.get("inactive_admin"):
+        return Response({"error": "This admin account is inactive"}, status=status.HTTP_403_FORBIDDEN)
 
-    # Generate JWT (name/email included for profile when DB is temporarily unavailable)
+    account_type = auth_result["account_type"]
+    account = auth_result["account"]
+
+    if account_type == "user" and getattr(account, "role", "") != "admin":
+        return Response({"error": "Invalid email or password"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if account_type == "admin":
+        admin_id = str(account.id)
+        admin_name = account.name or "Admin"
+        admin_email = account.email or ""
+        admin_role = account.role
+    else:
+        admin_id = str(account.id)
+        admin_name = account.fullname or "Admin"
+        admin_email = account.email or ""
+        admin_role = "admin"
+
     token = generate_jwt({
-        "id": str(admin.id),
+        "id": admin_id,
         "role": "admin",
-        "name": admin.name or "Admin",
-        "email": admin.email or "",
+        "name": admin_name,
+        "email": admin_email,
     })
 
     return Response({
         "message": "Admin login successful",
         "token": token,
         "admin": {
-        "id": str(admin.id),
-        "name": admin.name,
-        "email": admin.email,
-        "role": admin.role
+            "id": admin_id,
+            "name": admin_name,
+            "email": admin_email,
+            "role": admin_role,
         }
     }, status=status.HTTP_200_OK)
 
@@ -629,7 +677,7 @@ def forgot_password(request):
 
         # Send email using ONLY template - no hardcoded content
         try:
-            from email_templates.utils import get_email_template
+            from email_templates.utils import get_email_template, send_template_email, unpack_template_data
             
             # Get user name for template
             user_name = user.fullname if user else "Student"
@@ -649,19 +697,11 @@ def forgot_password(request):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
-            subject, html_message, plain_message = template_data
+            subject, html_message, plain_message, _attachments = unpack_template_data(template_data)
             print(f"✓ Using email template 'Password Reset OTP' for {email}")
             print(f"  Subject: {subject[:50]}...")
             
-            # Send email using template content only
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=[email],
-                html_message=html_message,
-                fail_silently=False,
-            )
+            send_template_email([email], template_data, fail_silently=False)
             print(f"✓ Password reset OTP email sent successfully to {email}")
             
         except Exception as e:

@@ -3,6 +3,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from mongoengine.errors import NotUniqueError
+from mongoengine.queryset.visitor import Q
 from django.utils.text import slugify
 from .models import Provider
 from .serializers import ProviderSerializer
@@ -13,6 +14,10 @@ from django.conf import settings
 from common.middleware import authenticate, restrict
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
 import json
+
+
+def _clamp_provider_description(value):
+    return str(value or "")[:50]
 
 
 def _provider_name_taken(name, exclude_id=None):
@@ -38,12 +43,28 @@ def _provider_slug_taken(slug, exclude_id=None):
         return False
     return True
 
+def _parse_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes", "on")
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 # ✅ List all active providers (Public)
 @api_view(['GET'])
 @permission_classes([AllowAny])
 @csrf_exempt
 def provider_list(request):
-    providers = Provider.objects(is_active=True).order_by('order')
+    providers = Provider.objects(is_active=True)
+    popular_only = request.GET.get("popular_only", "").lower() in ("1", "true", "yes")
+    if popular_only:
+        providers = providers.filter(
+            Q(show_in_popular_providers=True) | Q(show_in_popular_providers__exists=False)
+        )
+    providers = providers.order_by('order')
     serializer = ProviderSerializer(providers, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -170,11 +191,11 @@ def admin_provider_create(request):
                 order = 0
         
         # Convert is_active to boolean if it's a string
-        is_active = data.get('is_active', True)
-        if isinstance(is_active, str):
-            is_active = is_active.lower() in ('true', '1', 'yes', 'on')
-        elif isinstance(is_active, (int, float)):
-            is_active = bool(is_active)
+        is_active = _parse_bool(data.get('is_active', True), default=True)
+        show_in_popular_providers = _parse_bool(
+            data.get('show_in_popular_providers', False),
+            default=False,
+        )
         
         provider_name = str(data["name"]).strip()
         provider_slug = slugify(data.get("slug") or provider_name)
@@ -197,14 +218,15 @@ def admin_provider_create(request):
             slug=provider_slug,
             logo_url=data.get('logo_url', ''),  # Cloudinary URL from frontend
             page_title=data.get('page_title', ''),
-            description=data.get('description', ''),
+            description=_clamp_provider_description(data.get('description', '')),
             content=data.get('content', ''),
             faqs=faqs,
             meta_title=data.get('meta_title', ''),
             meta_keywords=data.get('meta_keywords', ''),
             meta_description=data.get('meta_description', ''),
             order=order,
-            is_active=is_active
+            is_active=is_active,
+            show_in_popular_providers=show_in_popular_providers,
         )
         
         # Handle logo file upload (legacy support)
@@ -300,7 +322,7 @@ def admin_provider_update(request, provider_id):
                 field="slug",
             )
         if 'description' in data:
-            provider.description = data['description']
+            provider.description = _clamp_provider_description(data['description'])
         if 'website_url' in data:
             provider.website_url = data['website_url']
         if 'logo_url' in data:
@@ -332,12 +354,13 @@ def admin_provider_update(request, provider_id):
         
         # Convert is_active to boolean if provided
         if 'is_active' in data:
-            is_active = data['is_active']
-            if isinstance(is_active, str):
-                is_active = is_active.lower() in ('true', '1', 'yes', 'on')
-            elif isinstance(is_active, (int, float)):
-                is_active = bool(is_active)
-            provider.is_active = is_active
+            provider.is_active = _parse_bool(data['is_active'], default=provider.is_active)
+
+        if 'show_in_popular_providers' in data:
+            provider.show_in_popular_providers = _parse_bool(
+                data['show_in_popular_providers'],
+                default=getattr(provider, 'show_in_popular_providers', False),
+            )
         
         # Handle logo removal
         remove_logo = data.get('remove_logo', '').lower() in ('true', '1', 'yes', 'on')

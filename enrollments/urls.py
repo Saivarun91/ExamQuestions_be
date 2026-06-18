@@ -11,6 +11,8 @@ from .views import (
     verify_razorpay_payment,
     create_pricing_plan_order,
     get_user_enrollments,
+    billing_history,
+    download_invoice,
     create_newsletter,
     send_newsletter,
     get_newsletters,
@@ -22,6 +24,7 @@ urlpatterns = [
     # Check if user enrolled
     path("", get_enrollments, name="get_enrollments"),
     path("user/", get_user_enrollments, name="get_user_enrollments"),
+    path("billing-history/", billing_history, name="billing_history"),
     path("check/<str:category_id>/", check_enrollment, name="check_enrollment"),
     
 
@@ -35,6 +38,7 @@ urlpatterns = [
     path("payment/create-order/", create_razorpay_order, name="create_razorpay_order"),
     path("payment/create-pricing-order/", create_pricing_plan_order, name="create_pricing_plan_order"),
     path("payment/verify/", verify_razorpay_payment, name="verify_razorpay_payment"),
+    path("payment/<str:payment_id>/invoice/", download_invoice, name="download_invoice"),
     
     # Newsletter endpoints (MUST come before <str:enrollment_id>/ to avoid matching conflicts)
     path("newsletters/", get_newsletters, name="get_newsletters"),

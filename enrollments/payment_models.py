@@ -1,5 +1,5 @@
 # Payment model for Razorpay integration
-from mongoengine import Document, StringField, FloatField, DateTimeField, ObjectIdField, ReferenceField
+from mongoengine import Document, StringField, FloatField, DateTimeField, ObjectIdField, ReferenceField, DictField
 from bson import ObjectId
 from datetime import datetime
 
@@ -16,6 +16,9 @@ class Payment(Document):
     payment_method = StringField(default="razorpay")
     coupon_code = StringField(required=False)  # Coupon code if used
     discount_amount = FloatField(default=0)  # Discount amount applied
+    plan_name = StringField(required=False)
+    billing_details = DictField(required=False)
+    tax_breakdown = DictField(required=False)
     created_at = DateTimeField(default=datetime.utcnow)
     updated_at = DateTimeField(default=datetime.utcnow)
     paid_at = DateTimeField(required=False)

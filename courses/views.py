@@ -1640,6 +1640,8 @@ def manage_course_pricing(request, course_id):
                 "pricing_testimonials": course.pricing_testimonials or [],
                 "pricing_faqs": course.pricing_faqs or [],
                 "pricing_comparison": course.pricing_comparison or [],
+                "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+                "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
             }
             return Response(pricing_data)
 
@@ -1667,6 +1669,10 @@ def manage_course_pricing(request, course_id):
                 course.pricing_faqs = data['pricing_faqs']
             if 'pricing_comparison' in data:
                 course.pricing_comparison = data['pricing_comparison']
+            if 'gst_percentage' in data:
+                course.gst_percentage = float(data['gst_percentage'] or 0)
+            elif 'tax_percentage' in data:
+                course.gst_percentage = float(data['tax_percentage'] or 0)
             
             course.updated_at = datetime.datetime.utcnow()
             course.save()
@@ -1683,6 +1689,8 @@ def manage_course_pricing(request, course_id):
                     "pricing_testimonials": course.pricing_testimonials,
                     "pricing_faqs": course.pricing_faqs,
                     "pricing_comparison": course.pricing_comparison,
+                    "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+                    "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
                 }
             })
 
@@ -1928,6 +1936,17 @@ def get_pricing_by_slug(request, provider, exam_code):
                 if 'status' not in plan:
                     plan['status'] = 'active'
         
+        # Ensure each plan carries course-level GST for checkout clients
+        course_gst = float(getattr(course, 'gst_percentage', 0) or 0)
+        for plan in pricing_plans:
+            plan_gst = plan.get('gst_percentage')
+            if plan_gst is None or plan_gst == '':
+                plan_gst = plan.get('tax_percentage')
+            if plan_gst is None or plan_gst == '':
+                plan_gst = course_gst
+            plan['gst_percentage'] = float(plan_gst or 0)
+            plan['tax_percentage'] = float(plan_gst or 0)
+        
         pricing_data = {
             "success": True,
             "course_id": str(course.id),
@@ -1942,6 +1961,9 @@ def get_pricing_by_slug(request, provider, exam_code):
             "pricing_testimonials": course.pricing_testimonials or [],
             "pricing_faqs": course.pricing_faqs or [],
             "pricing_comparison": course.pricing_comparison or [],
+            # GST % configured in admin pricing section
+            "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+            "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
         }
         print(f"[DEBUG] Found course: {course.title} (ID: {course.id}, Slug: {course.slug}) with {len(pricing_plans)} pricing plans")
         return Response(pricing_data, status=200)

@@ -5,7 +5,7 @@ class ProviderSerializer(serializers.Serializer):
     name = serializers.CharField(required=True)
     icon = serializers.CharField(required=True)
     slug = serializers.CharField(required=False)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
     website_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     logo_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -20,6 +20,7 @@ class ProviderSerializer(serializers.Serializer):
     )
     order = serializers.IntegerField(required=False)
     is_active = serializers.BooleanField(required=False)
+    show_in_popular_providers = serializers.BooleanField(required=False)
 
     def to_representation(self, instance):
         """Convert ObjectId to string for JSON serialization"""
@@ -66,6 +67,7 @@ class ProviderSerializer(serializers.Serializer):
             'faqs': get_dynamic('faqs', []) or [],
             'order': getattr(instance, 'order', 0),
             'is_active': getattr(instance, 'is_active', True),
+            'show_in_popular_providers': get_dynamic('show_in_popular_providers', True),
         }
 
     def create(self, validated_data):
@@ -89,5 +91,9 @@ class ProviderSerializer(serializers.Serializer):
         instance.faqs = validated_data.get("faqs", getattr(instance, "faqs", []))
         instance.order = validated_data.get("order", instance.order)
         instance.is_active = validated_data.get("is_active", instance.is_active)
+        instance.show_in_popular_providers = validated_data.get(
+            "show_in_popular_providers",
+            getattr(instance, "show_in_popular_providers", False),
+        )
         instance.save()
         return instance

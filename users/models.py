@@ -8,6 +8,52 @@ from datetime import datetime
 from django.contrib.auth.hashers import make_password, check_password
 
 
+def _normalize_credential(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def verify_password_with_migration(instance, raw_password, hash_password):
+    """
+    Verify password against stored value and support direct MongoDB Compass edits.
+    Accepts bcrypt hashes, Django hashes, and plain text (auto-migrated on login).
+    """
+    stored_password = _normalize_credential(getattr(instance, "password", ""))
+    raw_password = _normalize_credential(raw_password)
+
+    if not stored_password or not raw_password:
+        return False
+
+    # Django-style hash (admins collection / copied hashes)
+    if stored_password.startswith(("pbkdf2_", "argon2", "bcrypt_sha256")):
+        if check_password(raw_password, stored_password):
+            return True
+
+    # bcrypt hash (users collection)
+    if stored_password.startswith("$2"):
+        try:
+            if bcrypt.checkpw(
+                raw_password.encode("utf-8"),
+                stored_password.encode("utf-8"),
+            ):
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    # Plain text password updated directly in MongoDB Compass
+    if stored_password == raw_password:
+        try:
+            hash_password(raw_password)
+            instance.save()
+        except Exception:
+            # Allow login even if auto-hash migration fails after Compass edit
+            pass
+        return True
+
+    return False
+
+
 class User(me.Document):
     fullname = me.StringField(required=True)
     email = me.StringField(required=True, unique=True)
@@ -26,7 +72,7 @@ class User(me.Document):
         self.password = bcrypt.hashpw(raw_password.encode('utf-8'), bcrypt.gensalt()).decode()
 
     def check_password(self, raw_password):
-        return bcrypt.checkpw(raw_password.encode('utf-8'), self.password.encode('utf-8'))
+        return verify_password_with_migration(self, raw_password, self.set_password)
 
 
 class Admin(me.Document):
@@ -45,7 +91,7 @@ class Admin(me.Document):
         self.password = make_password(raw_password)
 
     def check_password(self, raw_password):
-        return check_password(raw_password, self.password)
+        return verify_password_with_migration(self, raw_password, self.set_password)
 
 
 class PasswordResetToken(me.Document):

@@ -32,6 +32,7 @@ class Provider(Document):
     # Display Settings
     order = IntField(default=0)
     is_active = BooleanField(default=True)
+    show_in_popular_providers = BooleanField(default=False)
     
     # Timestamps
     created_at = DateTimeField(default=datetime.datetime.utcnow)

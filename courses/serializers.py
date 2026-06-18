@@ -200,6 +200,8 @@ class CourseSerializer(serializers.Serializer):
             'pricing_testimonials': getattr(instance, 'pricing_testimonials', []),
             'pricing_faqs': getattr(instance, 'pricing_faqs', []),
             'pricing_comparison': getattr(instance, 'pricing_comparison', []),
+            'gst_percentage': float(getattr(instance, 'gst_percentage', 0) or 0),
+            'tax_percentage': float(getattr(instance, 'gst_percentage', 0) or 0),
             
             # SEO fields
             'meta_title': getattr(instance, 'meta_title', None),

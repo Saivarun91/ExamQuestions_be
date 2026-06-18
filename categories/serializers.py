@@ -93,7 +93,7 @@ class CategorySerializer(serializers.Serializer):
     id = serializers.SerializerMethodField()
     title = serializers.CharField(required=True)
     main_category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    description = serializers.CharField(required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True, max_length=50)
     content = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     faqs = serializers.ListField(
         child=serializers.DictField(),
@@ -148,6 +148,9 @@ class CategorySerializer(serializers.Serializer):
         if _category_title_taken(title, exclude_id=exclude_id):
             raise serializers.ValidationError("This category already exists.")
         return title
+
+    def validate_description(self, value):
+        return str(value or "")[:50]
 
     def create(self, validated_data):
         # Generate slug from title if not provided

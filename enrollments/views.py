@@ -585,7 +585,7 @@ def create_enrollment(request):
                     send_enrollment_confirmation_email(
                         user_email=user.email,
                         user_name=user.fullname,
-                        category_name=course.name,
+                        category_name=get_enrollment_display_name(course=course),
                         enrolled_date=enrollment.enrolled_date,
                         expiry_date=enrollment.expiry_date
                     )
@@ -599,7 +599,7 @@ def create_enrollment(request):
                     "id": str(enrollment.id),
                     "user_name": user.fullname if user else user_id,
                     "course_id": str(course.id),
-                    "course_name": course.name,
+                    "course_name": get_enrollment_display_name(course=course),
                     "category": {
                         "id": str(course.category.id) if course.category else None,
                         "name": course.category.name if course.category else None
@@ -1210,6 +1210,101 @@ def get_user_enrollments(request):
         }, status=500)
 
 
+@csrf_exempt
+@authenticate
+def billing_history(request):
+    """List completed payments with billing details for the logged-in user."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        from .invoice_service import serialize_billing_record
+
+        user_id = request.user.get("id")
+        if not user_id:
+            return JsonResponse({"success": False, "message": "Authentication required."}, status=401)
+
+        user_id_str = str(user_id)
+        payments = Payment.objects(user_id=user_id_str, status="completed").order_by("-paid_at", "-created_at")
+
+        records = []
+        for payment in payments:
+            try:
+                enrollment = None
+                if getattr(payment, "enrollment_id", None):
+                    try:
+                        enrollment = payment.enrollment_id
+                    except Exception:
+                        enrollment = None
+                if not enrollment:
+                    enrollment = Enrollment.objects(payment=payment.id).first()
+                records.append(serialize_billing_record(payment, enrollment=enrollment))
+            except Exception as exc:
+                print(f"Error serializing billing record {payment.id}: {exc}")
+                continue
+
+        return JsonResponse({"success": True, "count": len(records), "data": records}, status=200)
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse(
+            {"success": False, "message": "Failed to fetch billing history", "error": str(e)},
+            status=500,
+        )
+
+
+@csrf_exempt
+@authenticate
+def download_invoice(request, payment_id):
+    """Download invoice PDF for a completed payment."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        from django.http import HttpResponse
+        from .invoice_service import get_invoice_pdf_for_payment
+
+        user_id = str(request.user.get("id") or "")
+        if not user_id:
+            return JsonResponse({"success": False, "message": "Authentication required."}, status=401)
+
+        if not ObjectId.is_valid(payment_id):
+            return JsonResponse({"success": False, "message": "Invalid payment ID"}, status=400)
+
+        payment = Payment.objects(id=ObjectId(payment_id)).first()
+        if not payment:
+            return JsonResponse({"success": False, "message": "Payment not found"}, status=404)
+
+        if str(payment.user_id) != user_id:
+            return JsonResponse({"success": False, "message": "Access denied"}, status=403)
+
+        if payment.status != "completed":
+            return JsonResponse({"success": False, "message": "Invoice available only for completed payments"}, status=400)
+
+        user = User.objects(id=ObjectId(user_id)).first() if ObjectId.is_valid(user_id) else None
+        enrollment = None
+        if getattr(payment, "enrollment_id", None):
+            try:
+                enrollment = payment.enrollment_id
+            except Exception:
+                enrollment = None
+        if not enrollment:
+            enrollment = Enrollment.objects(payment=payment.id).first()
+
+        pdf_bytes = get_invoice_pdf_for_payment(payment, enrollment=enrollment, user=user)
+        filename = f"invoice-{payment_id}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse(
+            {"success": False, "message": "Failed to generate invoice", "error": str(e)},
+            status=500,
+        )
+
+
 # ==================== RAZORPAY PAYMENT VIEWS ====================
 
 import razorpay
@@ -1224,6 +1319,14 @@ from common.currency_utils import (
     format_min_purchase_message,
     get_currency_symbol,
 )
+
+
+def get_enrollment_display_name(course=None, category=None):
+    if course:
+        return getattr(course, 'title', None) or getattr(course, 'code', None) or "Course"
+    if category:
+        return getattr(category, 'name', None) or "Course"
+    return "Course"
 
 @csrf_exempt
 @authenticate
@@ -1251,6 +1354,7 @@ def create_razorpay_order(request):
         
         if coupon_code:
             from reviews.models import Coupon
+            from reviews.coupon_utils import user_has_used_coupon
             
             # Verify coupon
             coupon = Coupon.objects(code=coupon_code.upper()).first()
@@ -1258,34 +1362,14 @@ def create_razorpay_order(request):
                 # Check if coupon is valid - per-user usage tracking
                 if coupon.is_active:
                     now = datetime.utcnow()
-                    user_object_id = ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id
                     
-                    # Check if user has already used this coupon
-                    # Convert all items in used_by to ObjectId for consistent comparison
-                    used_by_object_ids = []
-                    for used_user_id in coupon.used_by:
-                        if ObjectId.is_valid(used_user_id):
-                            used_by_object_ids.append(ObjectId(used_user_id))
-                        else:
-                            used_by_object_ids.append(used_user_id)
-                    
-                    # Check if user has already used this coupon (using string comparison for reliability)
-                    user_already_used = False
-                    user_id_str = str(user_object_id)
-                    for used_id in used_by_object_ids:
-                        if str(used_id) == user_id_str:
-                            user_already_used = True
-                            break
-                    
-                    # For backward compatibility, also check is_used for non-authenticated cases
-                    # But per-user tracking (used_by) takes precedence
-                    if user_already_used:
+                    if user_has_used_coupon(coupon, user_id):
                         return JsonResponse({
                             "success": False,
                             "message": "You have already used this coupon code. Each coupon can only be used once."
                         }, status=400)
                     
-                    if not user_already_used and (not coupon.is_used or coupon.is_common):
+                    if not coupon.is_used or coupon.is_common:
                         if coupon.valid_from <= now and coupon.valid_until >= now:
                             # Check minimum purchase
                             if final_amount >= coupon.min_purchase:
@@ -1944,6 +2028,7 @@ def create_pricing_plan_order(request):
         
         if coupon_code:
             from reviews.models import Coupon
+            from reviews.coupon_utils import user_has_used_coupon
             
             # Verify coupon
             coupon = Coupon.objects(code=coupon_code.upper()).first()
@@ -1951,28 +2036,14 @@ def create_pricing_plan_order(request):
                 # Check if coupon is valid - per-user usage tracking
                 if coupon.is_active:
                     now = datetime.utcnow()
-                    user_object_id = ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id
                     
-                    # Check if user has already used this coupon
-                    # Convert all items in used_by to ObjectId for consistent comparison
-                    used_by_object_ids = []
-                    for used_user_id in coupon.used_by:
-                        if ObjectId.is_valid(used_user_id):
-                            used_by_object_ids.append(ObjectId(used_user_id))
-                        else:
-                            used_by_object_ids.append(used_user_id)
+                    if user_has_used_coupon(coupon, user_id):
+                        return JsonResponse({
+                            "success": False,
+                            "message": "You have already used this coupon code. Each coupon can only be used once."
+                        }, status=400)
                     
-                    # Check if user has already used this coupon (using string comparison for reliability)
-                    user_already_used = False
-                    user_id_str = str(user_object_id)
-                    for used_id in used_by_object_ids:
-                        if str(used_id) == user_id_str:
-                            user_already_used = True
-                            break
-                    
-                    # For backward compatibility, also check is_used for non-authenticated cases
-                    # But per-user tracking (used_by) takes precedence
-                    if not user_already_used and (not coupon.is_used or coupon.is_common):
+                    if not coupon.is_used or coupon.is_common:
                         if coupon.valid_from <= now and coupon.valid_until >= now:
                             # Check minimum purchase
                             if final_amount >= coupon.min_purchase:
@@ -2009,7 +2080,7 @@ def create_pricing_plan_order(request):
                     else:
                         return JsonResponse({
                             "success": False,
-                            "message": "You have already used this coupon code. Each coupon can only be used once."
+                            "message": "This coupon has already been used"
                         }, status=400)
                 else:
                     return JsonResponse({
@@ -2110,12 +2181,17 @@ def create_pricing_plan_order(request):
             existing_payment.delete()
 
         # Create payment record with final amount after discount
+        billing_details = data.get('billing_details') or {}
+        tax_breakdown = data.get('tax_breakdown') or {}
         payment = Payment(
             user_id=user_id,
             razorpay_order_id=razorpay_order['id'],
             amount=final_amount,  # Use final amount after discount
             currency=payment_currency,
-            status="pending"
+            status="pending",
+            plan_name=plan_name,
+            billing_details=billing_details,
+            tax_breakdown=tax_breakdown,
         )
         payment.save()
         
@@ -2247,12 +2323,18 @@ def verify_razorpay_payment(request):
                 duration_days = 365  # Default to 1 year if nothing is provided
 
         # Prefer course_id over category_id
+        course = None
+        category = None
+        enrollment = None
+        user = None
+
         if course_id:
             # Course-level enrollment
             from courses.models import Course
             course = Course.objects(id=ObjectId(course_id)).first()
             if not course:
                 return JsonResponse({"success": False, "message": "Course not found"}, status=404)
+            category = getattr(course, 'category', None)
 
             # Check if already enrolled
             existing = Enrollment.objects(user_name=payment.user_id, course=course).first()
@@ -2436,42 +2518,19 @@ def verify_razorpay_payment(request):
             traceback.print_exc()
             pass
 
-        # Mark coupon as used if payment has coupon code (per-user tracking)
+        # Mark coupon as used if payment has coupon code (one-time coupons only)
         if payment.coupon_code:
             try:
                 from reviews.models import Coupon
+                from reviews.coupon_utils import mark_coupon_used_by_user
                 coupon = Coupon.objects(code=payment.coupon_code.upper()).first()
-                if coupon:
-                    user_object_id = ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id
-                    # Convert all items in used_by to ObjectId for consistent comparison
-                    used_by_object_ids = []
-                    for used_user_id in coupon.used_by:
-                        if ObjectId.is_valid(used_user_id):
-                            used_by_object_ids.append(ObjectId(used_user_id))
-                        else:
-                            used_by_object_ids.append(used_user_id)
-                    
-                    # Check if user has already used this coupon (using ObjectId comparison)
-                    user_already_used = False
-                    for used_id in used_by_object_ids:
-                        if str(used_id) == str(user_object_id):
-                            user_already_used = True
-                            break
-                    
-                    # Add user to used_by list if not already there (one coupon per user)
-                    if not user_already_used:
-                        # Ensure we're adding ObjectId for consistency
-                        if ObjectId.is_valid(user_object_id):
-                            coupon.used_by.append(ObjectId(user_object_id))
-                        else:
-                            coupon.used_by.append(user_object_id)
-                        coupon.used_at = datetime.utcnow()
-                        # Also set is_used for backward compatibility (but per-user tracking is primary)
-                        coupon.is_used = True
-                        coupon.save()
-                        print(f"✅ Coupon {coupon.code} marked as used by user {user_id}")
-                    else:
-                        print(f"⚠️ Coupon {coupon.code} was already used by user {user_id} (duplicate payment attempt)")
+                if coupon and mark_coupon_used_by_user(coupon, user_id):
+                    coupon.used_at = datetime.utcnow()
+                    coupon.is_used = True
+                    coupon.save()
+                    print(f"✅ Coupon {coupon.code} marked as used by user {user_id}")
+                elif coupon and coupon.is_common:
+                    print(f"✓ Reusable coupon {coupon.code} used by user {user_id} (still valid for other exams)")
             except Exception as e:
                 # Ignore coupon errors - payment should still succeed
                 print(f"Warning: Could not mark coupon as used: {str(e)}")
@@ -2488,12 +2547,14 @@ def verify_razorpay_payment(request):
         # Create enrollment success notification
         try:
             from notifications.views import create_notification
-            course_name = course.name if course else (category.name if category else "Course")
+            if not user:
+                user = User.objects(id=ObjectId(payment.user_id)).first()
+            enrollment_name = get_enrollment_display_name(course=course, category=category)
             create_notification(
                 user=user,
                 notification_type='enrollment',
                 title='Enrollment Successful! 🎓',
-                message=f'Congratulations! You are now enrolled in {course_name}. Start learning now!',
+                message=f'Congratulations! You are now enrolled in {enrollment_name}. Start learning now!',
                 link='/dashboard',
                 metadata={'enrollment_id': str(enrollment.id), 'course_id': str(course.id) if course else None, 'category_id': str(category.id) if category else None}
             )
@@ -2507,62 +2568,42 @@ def verify_razorpay_payment(request):
         response_data = {
             "success": True,
             "message": "Payment verified and enrollment created successfully",
-            "enrollment_id": str(enrollment.id)
+            "enrollment_id": str(enrollment.id),
+            "payment_id": str(payment.id),
         }
         
         # Send emails asynchronously (non-blocking) to avoid delay
         try:
             import threading
             import traceback
-            from .email_utils import send_enrollment_confirmation_email, send_invoice_email
+            from .email_utils import send_enrollment_confirmation_email
+
+            email_user = user or User.objects(id=ObjectId(payment.user_id)).first()
+            email_enrollment = enrollment
+            enrollment_display_name = get_enrollment_display_name(course=course, category=category)
+            email_billing = dict(getattr(payment, 'billing_details', None) or {})
             
             def send_emails_async():
                 try:
-                    if user and user.email:
-                        print(f"Attempting to send enrollment email to: {user.email}")
+                    if email_user and email_user.email:
+                        billing_name = email_billing.get('name') or email_user.fullname or "Student"
+                        print(f"Attempting to send enrollment email to: {email_user.email}")
                         
                         # Send enrollment confirmation email
                         email_sent = send_enrollment_confirmation_email(
-                            user_email=user.email,
-                            user_name=user.fullname or "Student",
-                            category_name=category.name,
-                            enrolled_date=enrollment.enrolled_date,
-                            expiry_date=enrollment.expiry_date
+                            user_email=email_user.email,
+                            user_name=billing_name,
+                            category_name=enrollment_display_name,
+                            enrolled_date=email_enrollment.enrolled_date,
+                            expiry_date=email_enrollment.expiry_date
                         )
                         
                         if email_sent:
-                            print(f"✓ Enrollment confirmation email sent to {user.email}")
+                            print(f"✓ Enrollment confirmation email sent to {email_user.email}")
                         else:
-                            print(f"✗ Failed to send enrollment confirmation email to {user.email}")
-                        
-                        # Send invoice email
-                        payment_details = {
-                            "payment_id": str(payment.id),
-                            "amount": payment.amount,
-                            "currency": payment.currency,
-                            "payment_method": payment.payment_method,
-                            "razorpay_payment_id": payment.razorpay_payment_id,
-                            "razorpay_order_id": payment.razorpay_order_id,
-                            "paid_at": payment.paid_at
-                        }
-                        enrollment_details = {
-                            "category_name": category.name,
-                            "duration_months": duration_months
-                        }
-                        
-                        invoice_sent = send_invoice_email(
-                            user_email=user.email,
-                            user_name=user.fullname or "Student",
-                            payment_details=payment_details,
-                            enrollment_details=enrollment_details
-                        )
-                        
-                        if invoice_sent:
-                            print(f"✓ Invoice email sent to {user.email}")
-                        else:
-                            print(f"✗ Failed to send invoice email to {user.email}")
+                            print(f"✗ Failed to send enrollment confirmation email to {email_user.email}")
                     else:
-                        print(f"Warning: User or user email not found. User: {user}, Email: {user.email if user else 'N/A'}")
+                        print(f"Warning: User or user email not found. User: {email_user}, Email: {email_user.email if email_user else 'N/A'}")
                 except Exception as e:
                     print(f"Error sending emails asynchronously: {e}")
                     print(traceback.format_exc())

@@ -5,8 +5,57 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
-from datetime import datetime
-from email_templates.utils import get_email_template
+from datetime import datetime, date
+import re
+from email_templates.utils import get_email_template, send_template_email, unpack_template_data, replace_template_variables
+from email_templates.invoice_template import (
+    enrich_invoice_context,
+    find_admin_invoice_template,
+    render_builtin_invoice_email,
+    should_use_custom_admin_invoice,
+)
+
+
+def format_email_date(value):
+    """Format enrollment/payment dates for email templates."""
+    if value is None or value == "":
+        return "N/A"
+    if isinstance(value, datetime):
+        return value.strftime("%B %d, %Y")
+    if isinstance(value, date):
+        return value.strftime("%B %d, %Y")
+    if hasattr(value, "strftime"):
+        return value.strftime("%B %d, %Y")
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return "N/A"
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%m/%d/%Y"):
+            try:
+                parsed = datetime.strptime(raw[:19], fmt)
+                return parsed.strftime("%B %d, %Y")
+            except ValueError:
+                continue
+        return raw
+    return str(value)
+
+
+def build_enrollment_email_context(user_email, user_name, category_name, enrolled_date, expiry_date):
+    enrolled_date_str = format_email_date(enrolled_date)
+    expiry_date_str = format_email_date(expiry_date)
+    return {
+        "name": user_name,
+        "email": user_email,
+        "category_name": category_name,
+        "course_name": category_name,
+        "enrolled_date": enrolled_date_str,
+        "expiry_date": expiry_date_str,
+        "enrollment_date": enrolled_date_str,
+        "start_date": enrolled_date_str,
+        "end_date": expiry_date_str,
+        "date": enrolled_date_str,
+        "expiry": expiry_date_str,
+    }
 
 
 def send_enrollment_confirmation_email(user_email, user_name, category_name, enrolled_date, expiry_date):
@@ -21,19 +70,23 @@ def send_enrollment_confirmation_email(user_email, user_name, category_name, enr
             return False
         
         # Format dates
-        enrolled_date_str = enrolled_date.strftime('%B %d, %Y') if hasattr(enrolled_date, 'strftime') else str(enrolled_date)
-        expiry_date_str = expiry_date.strftime('%B %d, %Y') if hasattr(expiry_date, 'strftime') else str(expiry_date)
+        email_context = build_enrollment_email_context(
+            user_email, user_name, category_name, enrolled_date, expiry_date
+        )
+        enrolled_date_str = email_context["enrolled_date"]
+        expiry_date_str = email_context["expiry_date"]
         
         # Get email template - try multiple template name variations
         template_data = None
         template_names = [
-            "Enrollment Confirmation",  # Primary template name
+            "Enrollment Main",
+            "Enrollment Confirmation",
             "Enrollment Email",
             "Enrollment Notification",
             "Course Enrollment",
             "Enrollment Success",
             "Enrollment",
-            "Course Confirmation"
+            "Course Confirmation",
         ]
         
         print(f"📧 Attempting to send enrollment confirmation email to {user_email}")
@@ -106,13 +159,7 @@ def send_enrollment_confirmation_email(user_email, user_name, category_name, enr
         
         # Now get the template data using the validated template name
         if valid_enrollment_template:
-            template_data = get_email_template(valid_enrollment_template.name, {
-                "name": user_name,
-                "email": user_email,
-                "category_name": category_name,
-                "enrolled_date": enrolled_date_str,
-                "expiry_date": expiry_date_str
-            })
+            template_data = get_email_template(valid_enrollment_template.name, email_context)
         
         if not template_data:
             print(f"✗ ERROR: Email template for enrollment not found or not active!")
@@ -122,7 +169,7 @@ def send_enrollment_confirmation_email(user_email, user_name, category_name, enr
             print(f"  Suggested template name: 'Enrollment Confirmation' or 'Enrollment Email'")
             return False
         
-        subject, html_message, plain_message = template_data
+        subject, html_message, plain_message, attachments = unpack_template_data(template_data)
         
         # Validate template data
         if not subject or not html_message:
@@ -135,30 +182,15 @@ def send_enrollment_confirmation_email(user_email, user_name, category_name, enr
         
         # Send email
         try:
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=[user_email],
-                html_message=html_message,
-                fail_silently=False,
-            )
+            send_template_email([user_email], template_data, fail_silently=False)
             print(f"✓✓✓ Enrollment confirmation email sent successfully to {user_email} ✓✓✓")
             return True
         except Exception as email_error:
             print(f"✗ Error sending enrollment email to {user_email}: {email_error}")
             import traceback
             print(traceback.format_exc())
-            # Try to send with fail_silently=True as fallback
             try:
-                send_mail(
-                    subject=subject,
-                    message=plain_message,
-                    from_email=settings.EMAIL_HOST_USER,
-                    recipient_list=[user_email],
-                    html_message=html_message,
-                    fail_silently=True,
-                )
+                send_template_email([user_email], template_data, fail_silently=True)
                 print(f"✓ Enrollment email sent with fail_silently=True to {user_email}")
                 return True
             except Exception as fallback_error:
@@ -178,60 +210,142 @@ def send_invoice_email(user_email, user_name, payment_details, enrollment_detail
     Uses ONLY email template created by admin - no hardcoded content
     """
     try:
+        from common.currency_utils import get_currency_symbol
+
         # Get email template - REQUIRED, no fallback
-        paid_date = payment_details["paid_at"].strftime('%B %d, %Y') if payment_details.get("paid_at") else datetime.now().strftime('%B %d, %Y')
-        
-        template_data = get_email_template("Payment Invoice", {
+        paid_date = format_email_date(payment_details.get("paid_at"))
+        currency = payment_details.get("currency", "INR")
+        symbol = get_currency_symbol(currency)
+        amount = float(payment_details.get("amount", 0) or 0)
+        discount_amount = float(payment_details.get("discount_amount", 0) or 0)
+
+        billing = payment_details.get("billing_details") or {}
+        tax = payment_details.get("tax_breakdown") or {}
+        gst_amount = float(tax.get("gst_amount", 0) or 0)
+        cgst_amount = float(tax.get("cgst_amount", 0) or 0)
+        sgst_amount = float(tax.get("sgst_amount", 0) or 0)
+        gst_percentage = float(tax.get("gst_percentage", 0) or 0)
+        subtotal = round(max(0, amount - gst_amount), 2)
+
+        course_name = enrollment_details.get("course_name") or enrollment_details.get("category_name", "Course")
+        plan_name = enrollment_details.get("plan_name") or payment_details.get("plan_name") or "N/A"
+        gst_id = (billing.get("gst_id") or billing.get("gstin") or "").strip()
+
+        invoice_number = (
+            payment_details.get("invoice_number")
+            or payment_details.get("payment_id")
+            or payment_details.get("razorpay_order_id")
+            or "N/A"
+        )
+        amount_paid = f"{symbol}{amount:.2f}"
+        exam_price_without_gst = f"{symbol}{subtotal:.2f}"
+
+        invoice_context = {
             "name": user_name,
+            "customer_name": user_name,
             "email": user_email,
-            "category_name": enrollment_details["category_name"],
+            "customer_email": user_email,
+            "category_name": course_name,
+            "course_name": course_name,
+            "exam_name": course_name,
+            "plan_name": plan_name,
+            "plan": plan_name,
             "payment_id": payment_details.get("payment_id", "N/A"),
+            "invoice_number": invoice_number,
             "paid_date": paid_date,
+            "payment_date": paid_date,
+            "date": paid_date,
+            "invoice_date": paid_date,
             "duration_months": enrollment_details.get("duration_months", "N/A"),
+            "duration": enrollment_details.get("duration_months", "N/A"),
             "payment_method": payment_details.get("payment_method", "Razorpay"),
             "transaction_id": payment_details.get("razorpay_payment_id", "N/A"),
+            "razorpay_payment_id": payment_details.get("razorpay_payment_id", "N/A"),
             "order_id": payment_details.get("razorpay_order_id", "N/A"),
-            "amount": f"₹{payment_details['amount']:.2f}",
-            "currency": payment_details.get("currency", "INR")
-        })
-        
+            "razorpay_order_id": payment_details.get("razorpay_order_id", "N/A"),
+            "amount": amount_paid,
+            "amount_paid": amount_paid,
+            "total_amount": amount_paid,
+            "total": amount_paid,
+            "subtotal": f"{symbol}{subtotal:.2f}",
+            "discount_amount": f"{symbol}{discount_amount:.2f}" if discount_amount > 0 else f"{symbol}0.00",
+            "discount": f"{symbol}{discount_amount:.2f}" if discount_amount > 0 else f"{symbol}0.00",
+            "coupon_code": payment_details.get("coupon_code") or "N/A",
+            "coupon": payment_details.get("coupon_code") or "N/A",
+            "currency": currency,
+            "billing_name": billing.get("name") or user_name,
+            "billing_phone": billing.get("phone") or "N/A",
+            "phone": billing.get("phone") or "N/A",
+            "billing_address": billing.get("address") or "N/A",
+            "address": billing.get("address") or "N/A",
+            "billing_state": billing.get("state") or "N/A",
+            "state": billing.get("state") or "N/A",
+            "billing_country": billing.get("country") or "N/A",
+            "country": billing.get("country") or "N/A",
+            "gst_id": gst_id or "N/A",
+            "customer_gstin": gst_id or "",
+            "gstin": gst_id or "N/A",
+            "gst_percentage": f"{gst_percentage:.2f}" if gst_percentage else "0.00",
+            "gst_amount": f"{symbol}{gst_amount:.2f}" if gst_amount > 0 else f"{symbol}0.00",
+            "gst": f"{symbol}{gst_amount:.2f}" if gst_amount > 0 else f"{symbol}0.00",
+            "cgst_amount": f"{symbol}{cgst_amount:.2f}" if cgst_amount > 0 else f"{symbol}0.00",
+            "cgst": f"{symbol}{cgst_amount:.2f}" if cgst_amount > 0 else f"{symbol}0.00",
+            "sgst_amount": f"{symbol}{sgst_amount:.2f}" if sgst_amount > 0 else f"{symbol}0.00",
+            "sgst": f"{symbol}{sgst_amount:.2f}" if sgst_amount > 0 else f"{symbol}0.00",
+            "exam_price": exam_price_without_gst,
+            "exam_price_without_gst": exam_price_without_gst,
+            "base_amount": exam_price_without_gst,
+        }
+        invoice_context = enrich_invoice_context(invoice_context)
+
+        admin_template = find_admin_invoice_template()
+        template_data = None
+
+        if admin_template and should_use_custom_admin_invoice(admin_template):
+            template_data = get_email_template(admin_template.name, invoice_context)
+
         if not template_data:
-            print(f"✗ ERROR: Email template 'Payment Invoice' not found or not active!")
-            print(f"  Admin must create this template in Email Templates section.")
-            return False
+            admin_subject = None
+            if admin_template and (admin_template.subject or "").strip():
+                admin_subject = replace_template_variables(admin_template.subject.strip(), invoice_context)
+            template_data = render_builtin_invoice_email(invoice_context, subject=admin_subject)
+            print("✓ Using built-in invoice HTML template with dynamic details")
         
-        subject, html_message, plain_message = template_data
-        print(f"✓ Using email template 'Payment Invoice' for {user_email}")
+        subject, html_message, plain_message, attachments = unpack_template_data(template_data)
+
+        # If customer GSTIN was not provided, remove GSTIN row from template output.
+        customer_gstin = (invoice_context.get("customer_gstin") or "").strip()
+        if not customer_gstin:
+            html_message = re.sub(
+                r"<tr>\s*<td>\s*<strong>\s*GSTIN\s*:\s*</strong>\s*[^<]*</td>\s*</tr>",
+                "",
+                html_message,
+                flags=re.IGNORECASE,
+            )
+            plain_message = re.sub(
+                r"(?im)^\s*.*GSTIN\s*:\s*$",
+                "",
+                plain_message,
+            )
+
+        print(f"✓ Using invoice email for {user_email}")
         print(f"  Subject: {subject[:50]}...")
+
+        invoice_payload = (subject, html_message, plain_message, attachments)
         
         try:
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=[user_email],
-                html_message=html_message,
-                fail_silently=False,
-            )
+            send_template_email([user_email], invoice_payload, fail_silently=False)
             print(f"✓ Invoice email sent successfully to {user_email}")
             return True
         except Exception as email_error:
             print(f"✗ Error sending invoice email to {user_email}: {email_error}")
             import traceback
             print(traceback.format_exc())
-            # Try to send with fail_silently=True as fallback
             try:
-                send_mail(
-                    subject=subject,
-                    message=plain_message,
-                    from_email=settings.EMAIL_HOST_USER,
-                    recipient_list=[user_email],
-                    html_message=html_message,
-                    fail_silently=True,
-                )
+                send_template_email([user_email], invoice_payload, fail_silently=True)
                 print(f"✓ Invoice email sent with fail_silently=True to {user_email}")
                 return True
-            except:
+            except Exception:
                 return False
     except Exception as e:
         print(f"Error in send_invoice_email: {e}")
@@ -260,20 +374,13 @@ def send_newsletter_email(user_email, user_name, subject, content):
             return False
         
         # Use template subject if provided, otherwise use the passed subject
-        template_subject, html_message, plain_message = template_data
+        template_subject, html_message, plain_message, attachments = unpack_template_data(template_data)
         email_subject = template_subject if template_subject and template_subject.strip() else (subject if subject else 'Updates from PrepTara')
         
         print(f"✓ Using email template 'Newsletter' for {user_email}")
         print(f"  Subject: {email_subject[:50]}...")
         
-        send_mail(
-            subject=email_subject,
-            message=plain_message,
-            from_email=settings.EMAIL_HOST_USER,
-            recipient_list=[user_email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        send_template_email([user_email], (email_subject, html_message, plain_message, attachments), fail_silently=False)
         print(f"✓ Newsletter email sent successfully to {user_email}")
         return True
     except Exception as e:
@@ -301,38 +408,23 @@ def send_password_reset_confirmation_email(user_email, user_name, reset_time):
             print(f"  Admin must create this template in Email Templates section.")
             return False
         
-        subject, html_message, plain_message = template_data
+        subject, html_message, plain_message, attachments = unpack_template_data(template_data)
         print(f"✓ Using email template 'Password Reset Confirmation' for {user_email}")
         print(f"  Subject: {subject[:50]}...")
         
         try:
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=[user_email],
-                html_message=html_message,
-                fail_silently=False,
-            )
+            send_template_email([user_email], template_data, fail_silently=False)
             print(f"✓ Password reset confirmation email sent successfully to {user_email}")
             return True
         except Exception as email_error:
             print(f"✗ Error sending password reset confirmation email to {user_email}: {email_error}")
             import traceback
             print(traceback.format_exc())
-            # Try to send with fail_silently=True as fallback
             try:
-                send_mail(
-                    subject=subject,
-                    message=plain_message,
-                    from_email=settings.EMAIL_HOST_USER,
-                    recipient_list=[user_email],
-                    html_message=html_message,
-                    fail_silently=True,
-                )
+                send_template_email([user_email], template_data, fail_silently=True)
                 print(f"✓ Email sent with fail_silently=True to {user_email}")
                 return True
-            except:
+            except Exception:
                 return False
     except Exception as e:
         print(f"Error in send_password_reset_confirmation_email: {e}")
@@ -464,7 +556,7 @@ def send_coupon_email(user_email, user_name, coupon_code, discount_value, discou
             print(f"  Suggested template name: 'Coupon Email' or 'Coupon Received'")
             return False
         
-        subject, html_message, plain_message = template_data
+        subject, html_message, plain_message, attachments = unpack_template_data(template_data)
         
         # Validate template data
         if not subject or not html_message:
@@ -477,30 +569,15 @@ def send_coupon_email(user_email, user_name, coupon_code, discount_value, discou
         
         # Send email
         try:
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=[user_email],
-                html_message=html_message,
-                fail_silently=False,
-            )
+            send_template_email([user_email], template_data, fail_silently=False)
             print(f"✓✓✓ Coupon email sent successfully to {user_email} ✓✓✓")
             return True
         except Exception as email_error:
             print(f"✗ Error sending coupon email to {user_email}: {email_error}")
             import traceback
             print(traceback.format_exc())
-            # Try to send with fail_silently=True as fallback
             try:
-                send_mail(
-                    subject=subject,
-                    message=plain_message,
-                    from_email=settings.EMAIL_HOST_USER,
-                    recipient_list=[user_email],
-                    html_message=html_message,
-                    fail_silently=True,
-                )
+                send_template_email([user_email], template_data, fail_silently=True)
                 print(f"✓ Coupon email sent with fail_silently=True to {user_email}")
                 return True
             except Exception as fallback_error:
