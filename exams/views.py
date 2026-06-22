@@ -1828,13 +1828,17 @@ def start_test(request):
         # Check enrollment by course first (preferred)
         if hasattr(category, 'course') and category.course:
             course_obj = category.course
-            # Check enrollment record
-            enrollment = Enrollment.objects(user_name=user_id, course=course_obj).first()
-            if enrollment:
+            access_type = getattr(course_obj, 'pricing_access_type', None) or 'paid'
+            if str(access_type).lower() == 'free':
                 enrolled = True
             else:
-                # Also check in user's enrolled_courses list
-                enrolled = any(str(c.id) == str(course_obj.id) for c in user_obj.enrolled_courses if hasattr(c, 'id'))
+                # Check enrollment record
+                enrollment = Enrollment.objects(user_name=user_id, course=course_obj).first()
+                if enrollment:
+                    enrolled = True
+                else:
+                    # Also check in user's enrolled_courses list
+                    enrolled = any(str(c.id) == str(course_obj.id) for c in user_obj.enrolled_courses if hasattr(c, 'id'))
         
         # Fallback: Check enrollment by category (backward compatibility)
         if not enrolled and category_obj:

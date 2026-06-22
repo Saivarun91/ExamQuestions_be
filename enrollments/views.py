@@ -763,6 +763,10 @@ def check_enrollment(request, category_id):
         enrolled = False
         
         if course:
+            access_type = getattr(course, 'pricing_access_type', None) or 'paid'
+            if str(access_type).lower() == 'free':
+                return JsonResponse({"already_enrolled": True, "is_free_exam": True}, status=200)
+
             # Check enrollment by course - try multiple user_name formats
             user_id_str = str(userId)
             
@@ -905,6 +909,10 @@ def check_practice_enrollment(request, practice_id):
 
         # ✅ Check enrollment by course first (preferred)
         if practice.course:
+            access_type = getattr(practice.course, 'pricing_access_type', None) or 'paid'
+            if str(access_type).lower() == 'free':
+                return JsonResponse({"already_enrolled": True, "is_free_exam": True}, status=200)
+
             # Check if enrolled in the course
             enrollment = Enrollment.objects(user_name=user_id, course=practice.course).first()
             if enrollment:

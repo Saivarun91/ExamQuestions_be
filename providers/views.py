@@ -13,6 +13,7 @@ from django.http import HttpResponse, JsonResponse
 from django.conf import settings
 from common.middleware import authenticate, restrict
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
+from common.image_utils import convert_uploaded_image_to_webp
 from common.text_limits import clamp_to_word_limit
 import json
 
@@ -66,7 +67,12 @@ def provider_list(request):
             Q(show_in_popular_providers=True) | Q(show_in_popular_providers__exists=False)
         )
     providers = providers.order_by('order')
-    serializer = ProviderSerializer(providers, many=True, context={'request': request})
+    lite = request.GET.get("lite", "").lower() in ("1", "true", "yes")
+    serializer = ProviderSerializer(
+        providers,
+        many=True,
+        context={"request": request, "lite": lite},
+    )
     return Response(serializer.data)
 
 
@@ -233,7 +239,8 @@ def admin_provider_create(request):
         # Handle logo file upload (legacy support)
         logo_file = request.FILES.get('logo')
         if logo_file:
-            provider.logo.put(logo_file, content_type=logo_file.content_type)
+            logo_file = convert_uploaded_image_to_webp(logo_file)
+            provider.logo.put(logo_file, content_type=getattr(logo_file, "content_type", None) or "image/webp")
             provider.logo_url = None
         
         try:
@@ -364,7 +371,18 @@ def admin_provider_update(request, provider_id):
             )
         
         # Handle logo removal
-        remove_logo = data.get('remove_logo', '').lower() in ('true', '1', 'yes', 'on')
+        remove_logo_val = data.get("remove_logo", False)
+        if isinstance(remove_logo_val, bool):
+            remove_logo = remove_logo_val
+        elif remove_logo_val is None:
+            remove_logo = False
+        else:
+            remove_logo = str(remove_logo_val).strip().lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
         if remove_logo:
             if provider.logo:
                 provider.logo.delete()
@@ -376,10 +394,11 @@ def admin_provider_update(request, provider_id):
         if not remove_logo:
             logo_file = request.FILES.get('logo')
             if logo_file:
+                logo_file = convert_uploaded_image_to_webp(logo_file)
                 # Delete old logo if exists
                 if provider.logo:
                     provider.logo.delete()
-                provider.logo.put(logo_file, content_type=logo_file.content_type)
+                provider.logo.put(logo_file, content_type=getattr(logo_file, "content_type", None) or "image/webp")
                 provider.logo_url = None
         
         try:

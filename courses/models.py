@@ -63,6 +63,7 @@ class Course(Document):
     pricing_faqs = ListField(DictField(), default=list)         # FAQs specific to pricing page
     pricing_comparison = ListField(DictField(), default=list)   # Free vs Paid comparison table (feature, free, paid)
     gst_percentage = FloatField(default=0.0)                    # GST % for India billing (admin-configured)
+    pricing_access_type = StringField(default="paid")           # "free" = all questions open; "paid" = enrollment required
 
     # SEO FIELDS
     meta_title = StringField(default=None)

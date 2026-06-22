@@ -52,6 +52,7 @@ class CourseSerializer(serializers.Serializer):
     pricing_testimonials = serializers.ListField(child=serializers.DictField(), required=False)
     pricing_faqs = serializers.ListField(child=serializers.DictField(), required=False)
     pricing_comparison = serializers.ListField(child=serializers.DictField(), required=False)
+    pricing_access_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     # SEO fields
     meta_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -202,6 +203,7 @@ class CourseSerializer(serializers.Serializer):
             'pricing_comparison': getattr(instance, 'pricing_comparison', []),
             'gst_percentage': float(getattr(instance, 'gst_percentage', 0) or 0),
             'tax_percentage': float(getattr(instance, 'gst_percentage', 0) or 0),
+            'pricing_access_type': getattr(instance, 'pricing_access_type', None) or 'paid',
             
             # SEO fields
             'meta_title': getattr(instance, 'meta_title', None),

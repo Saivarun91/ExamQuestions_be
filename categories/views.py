@@ -12,6 +12,7 @@ from bson import ObjectId
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
+from common.image_utils import convert_uploaded_image_to_webp
 
 
 @api_view(['GET'])
@@ -94,6 +95,29 @@ def category_update(request, slug):
                 {"error": "Category not found"}, 
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        remove_image = request.data.get("remove_image")
+        if isinstance(remove_image, bool):
+            should_remove_image = remove_image
+        elif remove_image is None:
+            should_remove_image = False
+        else:
+            should_remove_image = str(remove_image).strip().lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
+
+        if should_remove_image:
+            try:
+                if getattr(category, "image", None):
+                    category.image.delete()
+            except Exception:
+                pass
+            category.image = None
+            category.image_url = None
+            category.save()
         
         serializer = CategorySerializer(category, data=request.data, partial=True, context={"request": request})
         if serializer.is_valid():
@@ -162,6 +186,8 @@ def category_upload_image(request, slug):
         if not file_obj:
             return Response({"error": "No image file provided"}, status=400)
 
+        file_obj = convert_uploaded_image_to_webp(file_obj)
+
         # Replace existing uploaded image if any
         try:
             if getattr(category, "image", None):
@@ -171,7 +197,7 @@ def category_upload_image(request, slug):
 
         content_type = getattr(file_obj, "content_type", None) or mimetypes.guess_type(
             getattr(file_obj, "name", "") or ""
-        )[0] or "image/jpeg"
+        )[0] or "image/webp"
         category.image.put(file_obj, content_type=content_type)
         # Clear explicit image_url so serializer serves uploaded image
         category.image_url = None

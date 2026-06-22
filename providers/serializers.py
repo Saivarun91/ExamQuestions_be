@@ -28,50 +28,73 @@ class ProviderSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         """Convert ObjectId to string for JSON serialization"""
-        def get_dynamic(field, default=None):
-            value = getattr(instance, field, default)
-            if value is not None:
-                return value
-            try:
-                if (
-                    hasattr(instance, "_data")
-                    and instance._data is not None
-                    and field in instance._data
-                ):
-                    return instance._data.get(field, default)
-            except Exception:
-                pass
-            return default
+        if self.context.get("lite"):
+            return self._lite_representation(instance)
+        return self._full_representation(instance)
 
-        # Use logo_url if available (Cloudinary URL), otherwise fall back to legacy file-based logo
-        logo_url = None
-        if hasattr(instance, 'logo_url') and instance.logo_url:
-            logo_url = instance.logo_url
-        elif hasattr(instance, 'logo') and instance.logo:
-            # Legacy: Build logo URL from file if logo_url is not set
-            request = self.context.get('request', None)
+    def _lite_representation(self, instance):
+        logo_url = self._resolve_logo_url(instance)
+        return {
+            "id": str(instance.id),
+            "name": instance.name,
+            "icon": instance.icon,
+            "slug": instance.slug,
+            "description": self._get_dynamic(instance, "description", None),
+            "website_url": self._get_dynamic(instance, "website_url", None),
+            "logo_url": logo_url,
+            "order": getattr(instance, "order", 0),
+            "is_active": getattr(instance, "is_active", True),
+            "show_in_popular_providers": self._get_dynamic(
+                instance, "show_in_popular_providers", True
+            ),
+        }
+
+    def _get_dynamic(self, instance, field, default=None):
+        value = getattr(instance, field, default)
+        if value is not None:
+            return value
+        try:
+            if (
+                hasattr(instance, "_data")
+                and instance._data is not None
+                and field in instance._data
+            ):
+                return instance._data.get(field, default)
+        except Exception:
+            pass
+        return default
+
+    def _resolve_logo_url(self, instance):
+        if hasattr(instance, "logo_url") and instance.logo_url:
+            return instance.logo_url
+        if hasattr(instance, "logo") and instance.logo:
+            request = self.context.get("request", None)
             if request:
-                logo_url = f"{request.scheme}://{request.get_host()}/api/providers/{str(instance.id)}/logo/"
-            else:
-                logo_url = f"/api/providers/{str(instance.id)}/logo/"
-        
+                return f"{request.scheme}://{request.get_host()}/api/providers/{str(instance.id)}/logo/"
+            return f"/api/providers/{str(instance.id)}/logo/"
+        return None
+
+    def _full_representation(self, instance):
+        logo_url = self._resolve_logo_url(instance)
         return {
             'id': str(instance.id),
             'name': instance.name,
             'icon': instance.icon,
             'slug': instance.slug,
-            'description': get_dynamic('description', None),
-            'website_url': get_dynamic('website_url', None),
+            'description': self._get_dynamic(instance, 'description', None),
+            'website_url': self._get_dynamic(instance, 'website_url', None),
             'logo_url': logo_url,
             'meta_title': getattr(instance, 'meta_title', None),
             'meta_keywords': getattr(instance, 'meta_keywords', None),
             'meta_description': getattr(instance, 'meta_description', None),
-            'page_title': get_dynamic('page_title', ""),
-            'content': get_dynamic('content', ""),
-            'faqs': get_dynamic('faqs', []) or [],
+            'page_title': self._get_dynamic(instance, 'page_title', ""),
+            'content': self._get_dynamic(instance, 'content', ""),
+            'faqs': self._get_dynamic(instance, 'faqs', []) or [],
             'order': getattr(instance, 'order', 0),
             'is_active': getattr(instance, 'is_active', True),
-            'show_in_popular_providers': get_dynamic('show_in_popular_providers', True),
+            'show_in_popular_providers': self._get_dynamic(
+                instance, 'show_in_popular_providers', True
+            ),
         }
 
     def create(self, validated_data):

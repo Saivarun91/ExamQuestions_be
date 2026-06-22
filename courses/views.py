@@ -1642,6 +1642,7 @@ def manage_course_pricing(request, course_id):
                 "pricing_comparison": course.pricing_comparison or [],
                 "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
                 "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+                "pricing_access_type": getattr(course, 'pricing_access_type', None) or 'paid',
             }
             return Response(pricing_data)
 
@@ -1673,6 +1674,9 @@ def manage_course_pricing(request, course_id):
                 course.gst_percentage = float(data['gst_percentage'] or 0)
             elif 'tax_percentage' in data:
                 course.gst_percentage = float(data['tax_percentage'] or 0)
+            if 'pricing_access_type' in data:
+                access_type = str(data.get('pricing_access_type') or 'paid').strip().lower()
+                course.pricing_access_type = 'free' if access_type == 'free' else 'paid'
             
             course.updated_at = datetime.datetime.utcnow()
             course.save()
@@ -1691,6 +1695,7 @@ def manage_course_pricing(request, course_id):
                     "pricing_comparison": course.pricing_comparison,
                     "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
                     "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+                    "pricing_access_type": getattr(course, 'pricing_access_type', None) or 'paid',
                 }
             })
 
@@ -1964,6 +1969,7 @@ def get_pricing_by_slug(request, provider, exam_code):
             # GST % configured in admin pricing section
             "gst_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
             "tax_percentage": float(getattr(course, 'gst_percentage', 0) or 0),
+            "pricing_access_type": getattr(course, 'pricing_access_type', None) or 'paid',
         }
         print(f"[DEBUG] Found course: {course.title} (ID: {course.id}, Slug: {course.slug}) with {len(pricing_plans)} pricing plans")
         return Response(pricing_data, status=200)
