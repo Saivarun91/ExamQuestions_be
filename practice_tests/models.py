@@ -37,9 +37,12 @@ class PracticeTest(Document):
     meta = {
         "collection": "practice_tests",
         "indexes": [
+            "course",
+            "category",
             # Composite index to ensure slug is unique per course
             [("slug", 1), ("course", 1)],
             # Composite index to ensure slug is unique per category (for backward compatibility)
             [("slug", 1), ("category", 1)],
+            [("course", 1), ("created_at", 1)],
         ]
     }

@@ -261,4 +261,92 @@ class CourseSerializer(serializers.Serializer):
         instance.updated_at = datetime.datetime.utcnow()
         instance.save()
         return instance
+
+
+class CourseListSerializer(serializers.Serializer):
+    """Lightweight public listing shape for exam cards and filters."""
+
+    def to_representation(self, instance):
+        provider_value = ""
+        provider_slug = None
+        provider_id = None
+        provider_ref = getattr(instance, "provider", None)
+        if provider_ref:
+            try:
+                provider_id = str(provider_ref.id) if provider_ref.id is not None else None
+                provider_value = getattr(provider_ref, "name", "") or str(provider_ref)
+                provider_slug = getattr(provider_ref, "slug", None)
+            except Exception:
+                provider_value = ""
+                provider_slug = None
+                provider_id = None
+
+        category_value = None
+        category_slug = None
+        category_ref = getattr(instance, "category", None)
+        if category_ref:
+            try:
+                category_value = (
+                    getattr(category_ref, "title", None)
+                    or getattr(category_ref, "name", None)
+                    or str(category_ref.id)
+                )
+                category_slug = getattr(category_ref, "slug", None)
+            except Exception:
+                category_value = None
+                category_slug = None
+
+        return {
+            "id": str(instance.id),
+            "provider": provider_value,
+            "provider_id": provider_id,
+            "provider_slug": provider_slug,
+            "exam_name": getattr(instance, "exam_name", None),
+            "title": getattr(instance, "title", getattr(instance, "name", "")),
+            "name": getattr(instance, "title", getattr(instance, "name", "")),
+            "code": getattr(instance, "code", ""),
+            "slug": getattr(instance, "slug", ""),
+            "practice_exams": getattr(instance, "practice_exams", 0),
+            "questions": getattr(instance, "questions", 0),
+            "badge": getattr(instance, "badge", None),
+            "category": category_value,
+            "category_slug": category_slug,
+            "actual_price": getattr(instance, "actual_price", 0.0),
+            "offer_price": getattr(instance, "offer_price", 0.0),
+            "currency": getattr(instance, "currency", "INR"),
+            "is_featured": getattr(instance, "is_featured", False),
+            "show_in_official_details": getattr(
+                instance, "show_in_official_details", False
+            ),
+            "official_details_url_slug": getattr(
+                instance, "official_details_url_slug", None
+            ),
+            "has_exam_details": self._has_exam_details(instance),
+            "meta_title": getattr(instance, "meta_title", None),
+            "meta_keywords": getattr(instance, "meta_keywords", None),
+            "meta_description": getattr(instance, "meta_description", None),
+            "is_active": getattr(instance, "is_active", True),
+            "updated_at": getattr(instance, "updated_at", None),
+        }
+
+    def _has_exam_details(self, instance):
+        def has_text(value):
+            return bool(str(value or "").strip())
+
+        if any(
+            has_text(getattr(instance, field, None))
+            for field in ("about", "page_heading", "exam_details", "details", "meta_title")
+        ):
+            return True
+
+        for field, key in (
+            ("topics", "name"),
+            ("testimonials", "name"),
+            ("faqs", "question"),
+        ):
+            items = getattr(instance, field, None) or []
+            if any(isinstance(item, dict) and has_text(item.get(key)) for item in items):
+                return True
+
+        return False
  

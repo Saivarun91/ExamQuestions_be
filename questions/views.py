@@ -8,6 +8,7 @@ from django.http import JsonResponse
 from bson import ObjectId
 from .models import Question
 from courses.models import Course
+from courses.counts import sync_course_counts
 from .serializers import QuestionSerializer
 from common.middleware import authenticate, restrict
 import csv
@@ -504,10 +505,7 @@ def create_question(request):
         )
         question.save()
 
-        # ✅ AUTO-SYNC: Update course's questions count
-        question_count = Question.objects(course=course).count()
-        course.questions = question_count
-        course.save()
+        sync_course_counts(course)
 
         serializer = QuestionSerializer(question)
         return Response({
@@ -556,11 +554,8 @@ def update_question(request, question_id):
         question.updated_at = datetime.datetime.utcnow()
         question.save()
 
-        # ✅ AUTO-SYNC: Update course's questions count
         if question.course:
-            question_count = Question.objects(course=question.course).count()
-            question.course.questions = question_count
-            question.course.save()
+            sync_course_counts(question.course)
 
         serializer = QuestionSerializer(question)
         return Response({
@@ -589,11 +584,8 @@ def delete_question(request, question_id):
         course = question.course
         question.delete()
 
-        # ✅ AUTO-SYNC: Update course's questions count
         if course:
-            question_count = Question.objects(course=course).count()
-            course.questions = question_count
-            course.save()
+            sync_course_counts(course)
 
         return Response({
             "success": True,
@@ -632,11 +624,8 @@ def bulk_delete_questions(request):
                 except Question.DoesNotExist:
                     continue
 
-        # ✅ AUTO-SYNC: Update questions count for all affected courses
         for course in courses_to_update:
-            question_count = Question.objects(course=course).count()
-            course.questions = question_count
-            course.save()
+            sync_course_counts(course)
 
         return Response({
             "success": True,
@@ -846,8 +835,7 @@ def upload_questions_csv(request):
             except Exception as e:
                 errors.append(f"Row {row_num}: {str(e)}")
 
-        course.questions = Question.objects(course=course).count()
-        course.save()
+        sync_course_counts(course)
 
         return JsonResponse({
             "success": created_count > 0,

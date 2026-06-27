@@ -626,6 +626,13 @@ from .models import (
     HomePageSeo, ExamDetailsSeo, ExamsPageSeo, ProvidersPageSeo, CategoriesPageSeo
 )
 from common.middleware import authenticate, restrict
+from common.pagination import (
+    apply_allowlisted_ordering,
+    paginate_mongoengine_queryset,
+    paginated_admin_payload,
+    parse_pagination_params,
+    regex_search_filter,
+)
 from bson import ObjectId
 import json
 from datetime import datetime
@@ -1439,6 +1446,123 @@ def _serialize_blog_post(post):
     }
 
 
+def _serialize_blog_post_summary(post):
+    """Keep the public list response shape while avoiding heavy body fields."""
+    return {
+        "id": str(post.id),
+        "title": post.title,
+        "slug": post.slug,
+        "excerpt": post.excerpt or "",
+        "content": "",
+        "category": post.category or "",
+        "image_url": post.thumbnail_url or post.image_url or "",
+        "author": getattr(post, "author", "") or "",
+        "reading_time": getattr(post, "reading_time", "") or "",
+        "meta_title": getattr(post, "meta_title", "") or post.title,
+        "meta_keywords": getattr(post, "meta_keywords", "") or "",
+        "meta_description": getattr(post, "meta_description", "") or post.excerpt or "",
+        "is_featured": post.is_featured or False,
+        "is_active": post.is_active,
+        "faqs": [],
+        "content_slider_type": "",
+        "content_slider_ref": "",
+        "created_at": post.created_at.isoformat() if post.created_at else "",
+        "updated_at": post.updated_at.isoformat() if post.updated_at else "",
+    }
+
+
+BLOG_SUMMARY_FIELDS = (
+    "title",
+    "slug",
+    "excerpt",
+    "thumbnail_url",
+    "image_url",
+    "category",
+    "reading_time",
+    "meta_title",
+    "meta_keywords",
+    "meta_description",
+    "is_featured",
+    "is_active",
+    "created_at",
+    "updated_at",
+)
+
+
+def _positive_int_param(request, name, default, maximum=None):
+    try:
+        value = int(request.GET.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    value = max(1, value)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
+
+
+def _blog_list_payload(request, query):
+    """Return existing success/data payload, with pagination metadata only when requested."""
+    if request.GET.get("category"):
+        query = query.filter(category=request.GET.get("category"))
+
+    exclude_slug = (request.GET.get("exclude_slug") or "").strip()
+    if exclude_slug:
+        query = query.filter(slug__ne=exclude_slug)
+
+    search = (request.GET.get("search") or "").strip()
+    if search:
+        import re
+        regex_filter = {"$regex": re.escape(search), "$options": "i"}
+        query = query.filter(
+            __raw__={
+                "$or": [
+                    {"title": regex_filter},
+                    {"excerpt": regex_filter},
+                    {"category": regex_filter},
+                ]
+            }
+        )
+
+    query = query.order_by("-created_at")
+    use_pagination = "page" in request.GET or "page_size" in request.GET
+    use_lite = request.GET.get("lite") == "1"
+    serializer = _serialize_blog_post_summary if use_lite else _serialize_blog_post
+
+    count = None
+    page = 1
+    page_size = None
+    if use_pagination:
+        page = _positive_int_param(request, "page", 1)
+        page_size = _positive_int_param(request, "page_size", 9, maximum=100)
+        count = query.count()
+        query = query.skip((page - 1) * page_size).limit(page_size)
+
+    if use_lite:
+        query = query.only(*BLOG_SUMMARY_FIELDS)
+
+    data = [serializer(post) for post in query]
+    payload = {"success": True, "data": data}
+
+    if use_pagination:
+        total_pages = max(1, (count + page_size - 1) // page_size)
+        payload["pagination"] = {
+            "count": count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1,
+        }
+
+    if request.GET.get("include_categories") == "1":
+        categories = BlogPost.objects().distinct("category")
+        payload["categories"] = sorted(
+            category for category in categories if category
+        )
+
+    return payload
+
+
 def _parse_blog_faqs_from_request(faqs_data):
     """Normalize FAQ payload from admin create/update requests."""
     if not faqs_data or not isinstance(faqs_data, list):
@@ -1460,9 +1584,7 @@ def get_blog_posts(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
-        posts = BlogPost.objects(is_featured=True).order_by('-created_at')
-        data = [_serialize_blog_post(post) for post in posts]
-        return JsonResponse({"success": True, "data": data})
+        return JsonResponse(_blog_list_payload(request, BlogPost.objects(is_featured=True)))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1476,9 +1598,7 @@ def get_all_blog_posts(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
-        posts = BlogPost.objects().order_by('-created_at')
-        data = [_serialize_blog_post(post) for post in posts]
-        return JsonResponse({"success": True, "data": data})
+        return JsonResponse(_blog_list_payload(request, BlogPost.objects()))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1513,10 +1633,34 @@ def manage_blog_posts(request):
     """Admin: Manage blog posts"""
     if request.method == 'GET':
         try:
-            posts = BlogPost.objects.all().order_by('-created_at')
-            data = []
-            for post in posts:
-                data.append({
+            page, page_size = parse_pagination_params(request)
+            raw_query = regex_search_filter(
+                request.GET.get("search") or request.GET.get("q"),
+                ["title", "excerpt", "slug", "category"],
+            )
+            posts = BlogPost.objects(__raw__=raw_query) if raw_query else BlogPost.objects.all()
+            posts, _ordering = apply_allowlisted_ordering(
+                posts,
+                request.GET.get("ordering"),
+                {
+                    "-created_at",
+                    "created_at",
+                    "-updated_at",
+                    "updated_at",
+                    "title",
+                    "-title",
+                    "category",
+                    "-category",
+                },
+                "-created_at",
+            )
+            page_posts, pagination = paginate_mongoengine_queryset(
+                posts,
+                page,
+                page_size,
+            )
+            data = [
+                {
                     "id": str(post.id),
                     "title": post.title,
                     "excerpt": post.excerpt or "",
@@ -1535,8 +1679,17 @@ def manage_blog_posts(request):
                     "faqs": _serialize_blog_faqs(post),
                     "content_slider_type": getattr(post, "content_slider_type", "") or "",
                     "content_slider_ref": getattr(post, "content_slider_ref", "") or "",
-                })
-            return JsonResponse({"success": True, "data": data})
+                }
+                for post in page_posts
+            ]
+            return JsonResponse(
+                paginated_admin_payload(
+                    data,
+                    pagination["count"],
+                    pagination["page"],
+                    pagination["page_size"],
+                )
+            )
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
     

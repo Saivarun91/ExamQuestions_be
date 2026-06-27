@@ -285,7 +285,17 @@ class BlogPost(Document):
 
     meta = {
         "collection": "blog_posts",
-        "strict": False
+        "strict": False,
+        "indexes": [
+            "title",
+            "slug",
+            "category",
+            "-created_at",
+            "-updated_at",
+            ("is_featured", "-created_at"),
+            ("category", "-created_at"),
+            ("title", "-created_at"),
+        ],
     }
 
 

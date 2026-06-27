@@ -41,7 +41,17 @@ class Provider(Document):
     meta = {
         "collection": "providers",
         "ordering": ["order"],
-        "strict": False
+        "strict": False,
+        "indexes": [
+            "is_active",
+            "order",
+            "name",
+            "slug",
+            "-created_at",
+            [("is_active", 1), ("order", 1)],
+            [("show_in_popular_providers", 1), ("is_active", 1)],
+            [("order", 1), ("name", 1)],
+        ],
     }
 
     def save(self, *args, **kwargs):

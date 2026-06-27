@@ -25,7 +25,14 @@ class Category(Document):
 
     meta = {
         "collection": "categories",
-        "strict": False
+        "strict": False,
+        "indexes": [
+            "title",
+            "slug",
+            "main_category",
+            "is_top_certification",
+            [("title", 1), ("slug", 1)],
+        ],
     }
 
     def save(self, *args, **kwargs):

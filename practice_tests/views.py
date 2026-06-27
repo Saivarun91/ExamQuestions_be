@@ -5,6 +5,7 @@ from rest_framework import status
 from .models import PracticeTest
 from categories.models import Category
 from courses.models import Course
+from courses.counts import sync_course_counts
 from .serializers import PracticeTestSerializer
 
 
@@ -227,14 +228,8 @@ def create_test(request):
                 test.questions = question_count
                 test.save()
             
-            # ✅ AUTO-UPDATE: Update course's practice_exams and questions count
             if course:
-                from questions.models import Question
-                practice_test_count = PracticeTest.objects(course=course).count()
-                question_count = Question.objects(course=course).count()
-                course.practice_exams = practice_test_count
-                course.questions = question_count
-                course.save()
+                sync_course_counts(course)
             
             # Serialize the created test for response
             serializer = PracticeTestSerializer(test)
@@ -325,16 +320,8 @@ def update_test(request, slug):
     if serializer.is_valid():
         serializer.save()
         
-        # ✅ AUTO-UPDATE: Update course's practice_exams and questions count after update
         if test.course:
-            from courses.models import Course
-            from questions.models import Question
-            course = test.course
-            practice_test_count = PracticeTest.objects(course=course).count()
-            question_count = Question.objects(course=course).count()
-            course.practice_exams = practice_test_count
-            course.questions = question_count
-            course.save()
+            sync_course_counts(test.course)
         
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -364,23 +351,16 @@ def delete_test(request, slug):
     if not test:
         return Response({"error": "Test not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # ✅ AUTO-UPDATE: Update course's practice_exams and questions count before deletion
     course_ref = test.course if hasattr(test, 'course') and test.course else None
     
     test.delete()
     
     # Update the course's practice_exams and questions count
     if course_ref:
-        from courses.models import Course
-        from questions.models import Question
         try:
-            practice_test_count = PracticeTest.objects(course=course_ref).count()
-            question_count = Question.objects(course=course_ref).count()
-            course_ref.practice_exams = practice_test_count
-            course_ref.questions = question_count
-            course_ref.save()
+            sync_course_counts(course_ref)
         except Exception as e:
-            print(f"Error updating course counts after test deletion: {e}")(f"Error updating course practice_exams count: {e}")
+            print(f"Error updating course counts after test deletion: {e}")
     
     return Response({"message": "Test deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 

@@ -12,9 +12,17 @@ from bson import ObjectId
 from mongoengine.errors import NotUniqueError
 from common.middleware import authenticate, restrict
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
+from common.pagination import (
+    apply_allowlisted_ordering,
+    paginate_mongoengine_queryset,
+    paginated_admin_payload,
+    parse_pagination_params,
+    regex_search_filter,
+)
 
 from .models import Course
-from .serializers import CourseSerializer
+from .serializers import CourseListSerializer, CourseSerializer
+from .counts import sync_course_counts
 
 
 def _provider_input_is_empty(provider_input):
@@ -226,6 +234,70 @@ def _get_admin_featured_courses(limit=None):
     if limit is not None:
         return featured[:limit]
     return featured
+
+
+def _featured_course_lite_rows(limit=8):
+    """Small card/listing shape for featured exam widgets."""
+    from providers.models import Provider
+
+    safe_limit = max(1, min(int(limit or 8), 50))
+    docs = list(
+        Course._get_collection()
+        .find(
+            {
+                "is_active": True,
+                "is_featured": {"$in": [True, 1, "true", "1", "yes", "on"]},
+            },
+            {
+                "provider": 1,
+                "title": 1,
+                "code": 1,
+                "slug": 1,
+                "badge": 1,
+                "is_featured": 1,
+                "is_active": 1,
+                "updated_at": 1,
+                "created_at": 1,
+            },
+        )
+        .sort([("updated_at", -1), ("created_at", -1)])
+        .limit(safe_limit)
+    )
+
+    provider_ids = {
+        doc.get("provider")
+        for doc in docs
+        if isinstance(doc.get("provider"), ObjectId)
+    }
+    providers = {
+        doc["_id"]: doc
+        for doc in Provider._get_collection().find(
+            {"_id": {"$in": list(provider_ids)}},
+            {"name": 1, "slug": 1},
+        )
+    } if provider_ids else {}
+
+    return [
+        {
+            "id": str(doc.get("_id")),
+            "provider": (providers.get(doc.get("provider")) or {}).get("name") or "",
+            "provider_id": (
+                str(doc.get("provider"))
+                if isinstance(doc.get("provider"), ObjectId)
+                else None
+            ),
+            "provider_slug": (providers.get(doc.get("provider")) or {}).get("slug"),
+            "title": doc.get("title") or "",
+            "name": doc.get("title") or "",
+            "code": doc.get("code") or "",
+            "slug": doc.get("slug") or "",
+            "badge": doc.get("badge") or "",
+            "is_featured": bool(doc.get("is_featured", False)),
+            "is_active": doc.get("is_active", True),
+            "updated_at": doc.get("updated_at"),
+        }
+        for doc in docs
+    ]
 
 
 # Stored in MongoDB for exam-details pages but not declared on Course — MongoEngine
@@ -487,6 +559,493 @@ def _bulk_fetch_course_extra_docs(courses):
     return by_id
 
 
+def _field_has_text_query(field):
+    return {field: {"$nin": [None, ""]}}
+
+
+def _field_has_items_query(field):
+    return {f"{field}.0": {"$exists": True}}
+
+
+def _admin_course_exam_details_query():
+    return {
+        "$or": [
+            _field_has_text_query("about"),
+            _field_has_text_query("page_heading"),
+            _field_has_text_query("exam_details"),
+            _field_has_text_query("details"),
+            _field_has_text_query("meta_title"),
+            _field_has_items_query("topics"),
+            _field_has_items_query("testimonials"),
+            _field_has_items_query("faqs"),
+        ]
+    }
+
+
+def _admin_course_distinct_official_slug_expr():
+    return {
+        "$and": [
+            {"$gt": [{"$strLenCP": {"$ifNull": ["$slug", ""]}}, 0]},
+            {"$gt": [{"$strLenCP": {"$ifNull": ["$official_details_url_slug", ""]}}, 0]},
+            {"$ne": ["$slug", "$official_details_url_slug"]},
+        ]
+    }
+
+
+def _admin_course_official_details_query():
+    return {
+        "$or": [
+            {"show_in_official_details": True},
+            _field_has_text_query("official_details_content"),
+            _field_has_text_query("official_details_page_title"),
+            _field_has_text_query("official_details_meta_title"),
+            _field_has_text_query("official_details_meta_description"),
+            _field_has_text_query("official_details_stat_exam_code"),
+            _field_has_text_query("official_details_stat_duration"),
+            _field_has_text_query("official_details_stat_total_questions"),
+            _field_has_text_query("official_details_stat_cost"),
+            _field_has_text_query("official_details_stat_certification_body"),
+            _field_has_text_query("official_details_stat_validity"),
+            _field_has_items_query("official_details_faqs"),
+        ]
+    }
+
+
+def _admin_course_manager_query(manager):
+    manager = str(manager or "").strip().lower()
+    if manager == "exam_details":
+        return {
+            "$or": [
+                {"show_in_official_details": {"$ne": True}},
+                _admin_course_exam_details_query(),
+                {"$expr": _admin_course_distinct_official_slug_expr()},
+            ]
+        }
+    if manager == "official_details":
+        return _admin_course_official_details_query()
+    if manager == "practice_tests":
+        return {}
+    return {}
+
+
+def _admin_course_search_query(search):
+    search_query = regex_search_filter(
+        search,
+        ["title", "exam_name", "code", "slug"],
+    )
+    search = str(search or "").strip()
+    if not search:
+        return None
+
+    regex = {"$regex": re.escape(search), "$options": "i"}
+    search_or = list((search_query or {}).get("$or", []))
+    try:
+        from categories.models import Category
+        from providers.models import Provider
+
+        provider_ids = [
+            provider.id
+            for provider in Provider.objects(
+                __raw__={"$or": [{"name": regex}, {"slug": regex}]}
+            ).only("id")
+        ]
+        category_ids = [
+            category.id
+            for category in Category.objects(
+                __raw__={
+                    "$or": [
+                        {"title": regex},
+                        {"slug": regex},
+                        {"main_category": regex},
+                    ]
+                }
+            ).only("id")
+        ]
+        if provider_ids:
+            search_or.append({"provider": {"$in": provider_ids}})
+        if category_ids:
+            search_or.append({"category": {"$in": category_ids}})
+    except Exception:
+        pass
+
+    return {"$or": search_or} if search_or else None
+
+
+def _admin_course_query(request):
+    clauses = []
+    manager_query = _admin_course_manager_query(request.GET.get("manager"))
+    if manager_query:
+        clauses.append(manager_query)
+
+    is_active = request.GET.get("is_active")
+    if is_active is not None and str(is_active).strip() != "":
+        clauses.append({"is_active": _parse_bool(is_active, default=True)})
+
+    search_query = _admin_course_search_query(
+        request.GET.get("search") or request.GET.get("q")
+    )
+    if search_query:
+        clauses.append(search_query)
+
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def _single_or_none(queryset):
+    """Return the only match without issuing an expensive full count query."""
+    matches = list(queryset[:2])
+    return matches[0] if len(matches) == 1 else None
+
+
+def _limited_list(queryset, limit=25):
+    """Bound broad legacy fallback scans so one request cannot walk the collection."""
+    return list(queryset[:limit])
+
+
+def _positive_int_param(request, name, default, maximum=None):
+    try:
+        value = int(request.GET.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    value = max(1, value)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
+
+
+def _truthy_query_param(request, name):
+    return str(request.GET.get(name) or "").lower() in ("1", "true", "yes")
+
+
+def _paginated_response(results, count, page, page_size, stats=None):
+    total_pages = max(1, (count + page_size - 1) // page_size)
+    payload = {
+        "results": results,
+        "count": count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+    if stats is not None:
+        payload["stats"] = stats
+    return payload
+
+
+def _course_listing_visibility_match():
+    distinct_official_slug = {
+        "$and": [
+            {"$gt": [{"$strLenCP": {"$ifNull": ["$slug", ""]}}, 0]},
+            {"$gt": [{"$strLenCP": {"$ifNull": ["$official_details_url_slug", ""]}}, 0]},
+            {"$ne": ["$slug", "$official_details_url_slug"]},
+        ]
+    }
+    return {
+        "$or": [
+            {"show_in_official_details": {"$ne": True}},
+            {"has_exam_details": True},
+            {"$expr": distinct_official_slug},
+        ]
+    }
+
+
+def _public_course_list_from_raw(query=None):
+    """Fast public /api/courses/?lite=1 shape without per-course dereferencing."""
+    from categories.models import Category
+    from providers.models import Provider
+
+    query = query or {}
+    text_present = lambda field: {
+        "$gt": [{"$strLenCP": {"$ifNull": [f"${field}", ""]}}, 0]
+    }
+    array_present = lambda field: {
+        "$gt": [{"$size": {"$ifNull": [f"${field}", []]}}, 0]
+    }
+    docs = list(Course._get_collection().aggregate([
+        {"$match": query},
+        {"$sort": {"created_at": -1}},
+        {
+            "$project": {
+                "provider": 1,
+                "exam_name": 1,
+                "title": 1,
+                "code": 1,
+                "slug": 1,
+                "practice_exams": 1,
+                "questions": 1,
+                "badge": 1,
+                "category": 1,
+                "actual_price": 1,
+                "offer_price": 1,
+                "currency": 1,
+                "is_featured": 1,
+                "show_in_official_details": 1,
+                "official_details_url_slug": 1,
+                "meta_title": 1,
+                "meta_keywords": 1,
+                "meta_description": 1,
+                "is_active": 1,
+                "updated_at": 1,
+                "created_at": 1,
+                "has_exam_details": {
+                    "$or": [
+                        text_present("about"),
+                        text_present("page_heading"),
+                        text_present("exam_details"),
+                        text_present("details"),
+                        text_present("meta_title"),
+                        array_present("topics"),
+                        array_present("testimonials"),
+                        array_present("faqs"),
+                    ]
+                },
+            }
+        },
+        {"$match": _course_listing_visibility_match()},
+    ]))
+
+    provider_ids = {
+        doc.get("provider")
+        for doc in docs
+        if isinstance(doc.get("provider"), ObjectId)
+    }
+    category_ids = {
+        doc.get("category")
+        for doc in docs
+        if isinstance(doc.get("category"), ObjectId)
+    }
+
+    providers = {
+        doc["_id"]: doc
+        for doc in Provider._get_collection().find(
+            {"_id": {"$in": list(provider_ids)}},
+            {"name": 1, "slug": 1},
+        )
+    } if provider_ids else {}
+    categories = {
+        doc["_id"]: doc
+        for doc in Category._get_collection().find(
+            {"_id": {"$in": list(category_ids)}},
+            {"title": 1, "slug": 1},
+        )
+    } if category_ids else {}
+
+    rows = []
+    for doc in docs:
+        provider_doc = providers.get(doc.get("provider")) or {}
+        category_doc = categories.get(doc.get("category")) or {}
+        title = doc.get("title") or doc.get("name") or ""
+
+        rows.append({
+            "id": str(doc.get("_id")),
+            "provider": provider_doc.get("name") or "",
+            "provider_id": (
+                str(doc.get("provider"))
+                if isinstance(doc.get("provider"), ObjectId)
+                else None
+            ),
+            "provider_slug": provider_doc.get("slug"),
+            "exam_name": doc.get("exam_name"),
+            "title": title,
+            "name": title,
+            "code": doc.get("code") or "",
+            "slug": doc.get("slug") or "",
+            "practice_exams": doc.get("practice_exams") or 0,
+            "questions": doc.get("questions") or 0,
+            "badge": doc.get("badge"),
+            "category": category_doc.get("title"),
+            "category_slug": category_doc.get("slug"),
+            "actual_price": doc.get("actual_price") or 0.0,
+            "offer_price": doc.get("offer_price") or 0.0,
+            "currency": doc.get("currency") or "INR",
+            "is_featured": bool(doc.get("is_featured", False)),
+            "show_in_official_details": bool(
+                doc.get("show_in_official_details", False)
+            ),
+            "official_details_url_slug": doc.get("official_details_url_slug"),
+            "has_exam_details": bool(doc.get("has_exam_details", False)),
+            "meta_title": doc.get("meta_title"),
+            "meta_keywords": doc.get("meta_keywords"),
+            "meta_description": doc.get("meta_description"),
+            "is_active": doc.get("is_active", True),
+            "updated_at": doc.get("updated_at"),
+        })
+
+    return rows
+
+
+def _public_course_paginated_list_from_raw(query=None, page=1, page_size=12):
+    """Paginated public /api/courses/?lite=1 response used by listing pages."""
+    query = query or {}
+    skip = (page - 1) * page_size
+
+    text_present = lambda field: {
+        "$gt": [{"$strLenCP": {"$ifNull": [f"${field}", ""]}}, 0]
+    }
+    array_present = lambda field: {
+        "$gt": [{"$size": {"$ifNull": [f"${field}", []]}}, 0]
+    }
+    project_stage = {
+        "$project": {
+            "provider": 1,
+            "exam_name": 1,
+            "title": 1,
+            "code": 1,
+            "slug": 1,
+            "practice_exams": 1,
+            "questions": 1,
+            "badge": 1,
+            "category": 1,
+            "actual_price": 1,
+            "offer_price": 1,
+            "currency": 1,
+            "is_featured": 1,
+            "show_in_official_details": 1,
+            "official_details_url_slug": 1,
+            "meta_title": 1,
+            "meta_keywords": 1,
+            "meta_description": 1,
+            "is_active": 1,
+            "updated_at": 1,
+            "created_at": 1,
+            "has_exam_details": {
+                "$or": [
+                    text_present("about"),
+                    text_present("page_heading"),
+                    text_present("exam_details"),
+                    text_present("details"),
+                    text_present("meta_title"),
+                    array_present("topics"),
+                    array_present("testimonials"),
+                    array_present("faqs"),
+                ]
+            },
+        }
+    }
+    facet_pipeline = [
+        {"$match": query},
+        {"$sort": {"created_at": -1}},
+        project_stage,
+        {"$match": _course_listing_visibility_match()},
+        {
+            "$facet": {
+                "results": [{"$skip": skip}, {"$limit": page_size}],
+                "metadata": [{"$count": "count"}],
+                "stats": [
+                    {
+                        "$group": {
+                            "_id": None,
+                            "total_questions": {"$sum": {"$ifNull": ["$questions", 0]}},
+                            "total_practice_exams": {
+                                "$sum": {"$ifNull": ["$practice_exams", 0]}
+                            },
+                            "categories": {"$addToSet": "$category"},
+                        }
+                    }
+                ],
+            }
+        },
+    ]
+    payload = list(Course._get_collection().aggregate(facet_pipeline))
+    facet = payload[0] if payload else {}
+    docs = facet.get("results") or []
+    metadata = facet.get("metadata") or []
+    stats_rows = facet.get("stats") or []
+    count = metadata[0].get("count", 0) if metadata else 0
+    stats_row = stats_rows[0] if stats_rows else {}
+    categories = [
+        category for category in (stats_row.get("categories") or []) if category
+    ]
+    return _paginated_response(
+        _public_course_rows_from_docs(docs),
+        count,
+        page,
+        page_size,
+        {
+            "total_exams": count,
+            "practice_tests": stats_row.get("total_practice_exams", 0),
+            "questions": stats_row.get("total_questions", 0),
+            "categories": len(categories),
+        },
+    )
+
+
+def _public_course_rows_from_docs(docs):
+    from categories.models import Category
+    from providers.models import Provider
+
+    provider_ids = {
+        doc.get("provider")
+        for doc in docs
+        if isinstance(doc.get("provider"), ObjectId)
+    }
+    category_ids = {
+        doc.get("category")
+        for doc in docs
+        if isinstance(doc.get("category"), ObjectId)
+    }
+
+    providers = {
+        doc["_id"]: doc
+        for doc in Provider._get_collection().find(
+            {"_id": {"$in": list(provider_ids)}},
+            {"name": 1, "slug": 1},
+        )
+    } if provider_ids else {}
+    categories = {
+        doc["_id"]: doc
+        for doc in Category._get_collection().find(
+            {"_id": {"$in": list(category_ids)}},
+            {"title": 1, "slug": 1},
+        )
+    } if category_ids else {}
+
+    rows = []
+    for doc in docs:
+        provider_doc = providers.get(doc.get("provider")) or {}
+        category_doc = categories.get(doc.get("category")) or {}
+        title = doc.get("title") or doc.get("name") or ""
+
+        rows.append({
+            "id": str(doc.get("_id")),
+            "provider": provider_doc.get("name") or "",
+            "provider_id": (
+                str(doc.get("provider"))
+                if isinstance(doc.get("provider"), ObjectId)
+                else None
+            ),
+            "provider_slug": provider_doc.get("slug"),
+            "exam_name": doc.get("exam_name"),
+            "title": title,
+            "name": title,
+            "code": doc.get("code") or "",
+            "slug": doc.get("slug") or "",
+            "practice_exams": doc.get("practice_exams") or 0,
+            "questions": doc.get("questions") or 0,
+            "badge": doc.get("badge"),
+            "category": category_doc.get("title"),
+            "category_slug": category_doc.get("slug"),
+            "actual_price": doc.get("actual_price") or 0.0,
+            "offer_price": doc.get("offer_price") or 0.0,
+            "currency": doc.get("currency") or "INR",
+            "is_featured": bool(doc.get("is_featured", False)),
+            "show_in_official_details": bool(
+                doc.get("show_in_official_details", False)
+            ),
+            "official_details_url_slug": doc.get("official_details_url_slug"),
+            "has_exam_details": bool(doc.get("has_exam_details", False)),
+            "meta_title": doc.get("meta_title"),
+            "meta_keywords": doc.get("meta_keywords"),
+            "meta_description": doc.get("meta_description"),
+            "is_active": doc.get("is_active", True),
+            "updated_at": doc.get("updated_at"),
+        })
+
+    return rows
+
+
 # ------------------------------------------------------------
 # ✅ PUBLIC: Get all active courses
 # ------------------------------------------------------------
@@ -496,21 +1055,113 @@ def _bulk_fetch_course_extra_docs(courses):
 def course_list(request):
     """Get all active courses for public display"""
     try:
-        from practice_tests.models import PracticeTest
-        
+        from categories.models import Category
+        from providers.models import Provider
+
+        lite = str(request.GET.get("lite") or "").lower() in ("1", "true", "yes")
+        wants_pagination = (
+            "page" in request.GET
+            or "page_size" in request.GET
+            or "limit" in request.GET
+        )
+        provider_slug = str(request.GET.get("provider") or "").strip()
+        category_slug = str(request.GET.get("category") or "").strip()
+        search = str(
+            request.GET.get("q")
+            or request.GET.get("search")
+            or ""
+        ).strip()
+        min_questions = request.GET.get("min_questions")
+        provider = None
+        if provider_slug:
+            provider = Provider.objects(slug=provider_slug).first()
+            if not provider:
+                provider = Provider.objects(slug__iexact=provider_slug).first()
+            if not provider:
+                if lite and wants_pagination:
+                    page = _positive_int_param(request, "page", 1)
+                    page_size = _positive_int_param(
+                        request,
+                        "page_size",
+                        _positive_int_param(request, "limit", 12, 100),
+                        100,
+                    )
+                    return Response(_paginated_response([], 0, page, page_size))
+                return Response([])
+
+        category = None
+        if category_slug:
+            category = Category.objects(slug=category_slug).first()
+            if not category:
+                category = Category.objects(slug__iexact=category_slug).first()
+            if not category:
+                if lite and wants_pagination:
+                    page = _positive_int_param(request, "page", 1)
+                    page_size = _positive_int_param(
+                        request,
+                        "page_size",
+                        _positive_int_param(request, "limit", 12, 100),
+                        100,
+                    )
+                    return Response(_paginated_response([], 0, page, page_size))
+                return Response([])
+
+        if lite:
+            query = {"is_active": True}
+            if provider:
+                query["provider"] = provider.id
+            if category:
+                query["category"] = category.id
+            if min_questions not in (None, ""):
+                try:
+                    query["questions"] = {"$gte": int(min_questions)}
+                except (TypeError, ValueError):
+                    pass
+            if search:
+                regex = {"$regex": re.escape(search), "$options": "i"}
+                search_or = [
+                    {"title": regex},
+                    {"exam_name": regex},
+                    {"code": regex},
+                    {"slug": regex},
+                ]
+                matching_providers = list(
+                    Provider._get_collection().find(
+                        {
+                            "is_active": True,
+                            "$or": [
+                                {"name": regex},
+                                {"slug": regex},
+                            ],
+                        },
+                        {"_id": 1},
+                    )
+                )
+                provider_ids = [doc["_id"] for doc in matching_providers]
+                if provider_ids:
+                    search_or.append({"provider": {"$in": provider_ids}})
+                query["$or"] = search_or
+            if wants_pagination:
+                page = _positive_int_param(request, "page", 1)
+                page_size = _positive_int_param(
+                    request,
+                    "page_size",
+                    _positive_int_param(request, "limit", 12, 100),
+                    100,
+                )
+                return Response(
+                    _public_course_paginated_list_from_raw(query, page, page_size)
+                )
+            return Response(_public_course_list_from_raw(query))
+
         courses = Course.objects(is_active=True).order_by('-created_at')
-        
-        # ✅ AUTO-SYNC: Ensure practice_exams and questions counts are accurate for each course
-        from questions.models import Question
-        for course in courses:
-            practice_test_count = PracticeTest.objects(course=course).count()
-            question_count = Question.objects(course=course).count()
-            if course.practice_exams != practice_test_count or course.questions != question_count:
-                course.practice_exams = practice_test_count
-                course.questions = question_count
-                course.save()
-        
-        serializer = CourseSerializer(courses, many=True)
+        if provider:
+            courses = courses.filter(provider=provider)
+        if category:
+            courses = courses.filter(category=category)
+
+        serializer_class = CourseListSerializer if lite else CourseSerializer
+        serializer = serializer_class(courses, many=True)
         return Response(serializer.data)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -525,15 +1176,41 @@ def course_list(request):
 @csrf_exempt
 def admin_course_list(request):
     try:
-        courses = Course.objects.all().order_by('-created_at')
+        page, page_size = parse_pagination_params(request)
+        raw_query = _admin_course_query(request)
+        courses = Course.objects(__raw__=raw_query) if raw_query else Course.objects.all()
+        courses, _ordering = apply_allowlisted_ordering(
+            courses,
+            request.GET.get("ordering"),
+            {
+                "-created_at",
+                "created_at",
+                "-updated_at",
+                "updated_at",
+                "title",
+                "-title",
+                "code",
+                "-code",
+            },
+            "-created_at",
+        )
+        page_courses, pagination = paginate_mongoengine_queryset(courses, page, page_size)
+        page_courses = list(page_courses)
 
-        serializer = CourseSerializer(courses, many=True)
-        extras = _bulk_fetch_course_extra_docs(courses)
+        serializer = CourseSerializer(page_courses, many=True)
+        extras = _bulk_fetch_course_extra_docs(page_courses)
         merged = [
             _merge_course_extra_from_doc(item, extras.get(item.get("id")))
             for item in serializer.data
         ]
-        return Response({"success": True, "data": merged})
+        return Response(
+            paginated_admin_payload(
+                merged,
+                pagination["count"],
+                pagination["page"],
+                pagination["page_size"],
+            )
+        )
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -607,10 +1284,6 @@ def course_create(request):
         # Do NOT auto-enable it based on category; it must be explicitly chosen in admin.
         is_featured = _parse_bool(data.get("is_featured"), default=False)
 
-        # ✅ AUTO-CALCULATE: Get actual counts from related documents
-        from practice_tests.models import PracticeTest
-        from questions.models import Question
-        
         # Store slug exactly as entered in admin (trim whitespace only)
         slug = str(data['slug']).strip()
         code = str(data.get('code') or '').strip() or slug
@@ -659,12 +1332,7 @@ def course_create(request):
         except NotUniqueError as exc:
             return not_unique_conflict(exc, field="slug")
 
-        # ✅ AUTO-SYNC: Calculate and update counts from related documents
-        practice_test_count = PracticeTest.objects(course=course).count()
-        question_count = Question.objects(course=course).count()
-        course.practice_exams = practice_test_count
-        course.questions = question_count
-        course.save()
+        sync_course_counts(course)
 
         serializer = CourseSerializer(course)
         return Response({"success": True, "message": "Course created successfully", "data": serializer.data}, status=201)
@@ -788,9 +1456,9 @@ def course_detail(request, course_identifier):
                             # If still not found, try partial match
                             if not provider:
                                 try:
-                                    providers = Provider.objects.filter(slug__icontains=provider_slug)
-                                    if providers.count() == 1:
-                                        provider = providers.first()
+                                    provider = _single_or_none(
+                                        Provider.objects.filter(slug__icontains=provider_slug)
+                                    )
                                 except Exception:
                                     pass
                         
@@ -921,9 +1589,12 @@ def course_detail(request, course_identifier):
                             if not course:
                                 try:
                                     # Try partial slug match
-                                    courses = Course.objects.filter(provider=provider, slug__icontains=code_part.lower())
-                                    if courses.count() == 1:
-                                        course = courses.first()
+                                    course = _single_or_none(
+                                        Course.objects.filter(
+                                            provider=provider,
+                                            slug__icontains=code_part.lower(),
+                                        )
+                                    )
                                 except Exception:
                                     pass
                     
@@ -939,9 +1610,11 @@ def course_detail(request, course_identifier):
                             except Course.DoesNotExist:
                                 try:
                                     # Try slug containing the identifier
-                                    courses = Course.objects.filter(slug__icontains=course_identifier.lower())
-                                    if courses.count() == 1:
-                                        course = courses.first()
+                                    course = _single_or_none(
+                                        Course.objects.filter(
+                                            slug__icontains=course_identifier.lower()
+                                        )
+                                    )
                                 except Exception:
                                     pass
                     
@@ -970,11 +1643,13 @@ def course_detail(request, course_identifier):
                             # Try each variation
                             for code_var in code_variations:
                                 try:
-                                    courses = Course.objects.filter(code__icontains=code_var)
-                                    if courses.count() == 1:
-                                        course = courses.first()
+                                    courses = _limited_list(
+                                        Course.objects.filter(code__icontains=code_var)
+                                    )
+                                    if len(courses) == 1:
+                                        course = courses[0]
                                         break
-                                    elif courses.count() > 1:
+                                    elif len(courses) > 1:
                                         # If multiple matches, try to find one with matching slug pattern
                                         for c in courses:
                                             c_slug_lower = c.slug.lower()
@@ -991,9 +1666,12 @@ def course_detail(request, course_identifier):
                             if not course:
                                 for code_var in code_variations[:3]:  # Try first 3 variations
                                     try:
-                                        courses = Course.objects.filter(slug__icontains=code_var.lower())
-                                        if courses.count() == 1:
-                                            course = courses.first()
+                                        course = _single_or_none(
+                                            Course.objects.filter(
+                                                slug__icontains=code_var.lower()
+                                            )
+                                        )
+                                        if course:
                                             break
                                     except Exception:
                                         continue
@@ -1002,7 +1680,7 @@ def course_detail(request, course_identifier):
                     if not course:
                         try:
                             identifier_lower = normalized_identifier.lower()
-                            prefix_matches = list(
+                            prefix_matches = _limited_list(
                                 Course.objects.filter(
                                     slug__istartswith=identifier_lower,
                                     is_active=True,
@@ -1035,17 +1713,6 @@ def course_detail(request, course_identifier):
         # Ensure course was found
         if not course:
                     raise Course.DoesNotExist()
-
-        # ✅ AUTO-SYNC: Ensure counts are accurate
-        from practice_tests.models import PracticeTest
-        from questions.models import Question
-        
-        practice_test_count = PracticeTest.objects(course=course).count()
-        question_count = Question.objects(course=course).count()
-        if course.practice_exams != practice_test_count or course.questions != question_count:
-            course.practice_exams = practice_test_count
-            course.questions = question_count
-            course.save()
 
         serializer = CourseSerializer(course)
         raw = _fetch_course_extra_doc(course.id)
@@ -1345,14 +2012,7 @@ def course_update(request, course_id):
                 # Update course's practice_tests reference field
                 course.practice_tests = synced_practice_tests
 
-        # ✅ AUTO-SYNC: Calculate and update counts from related documents
-        from practice_tests.models import PracticeTest
-        from questions.models import Question
-        
-        practice_test_count = PracticeTest.objects(course=course).count()
-        question_count = Question.objects(course=course).count()
-        course.practice_exams = practice_test_count
-        course.questions = question_count
+        sync_course_counts(course, save=False)
         
         import datetime
         course.updated_at = datetime.datetime.utcnow()
@@ -1446,7 +2106,6 @@ def course_delete(request, course_id):
 def courses_by_category(request, category_slug):
     try:
         from categories.models import Category
-        from practice_tests.models import PracticeTest
 
         category = Category.objects.get(slug=category_slug)
         courses = Course.objects(category=category, is_active=True).order_by('-created_at')
@@ -1458,13 +2117,6 @@ def courses_by_category(request, category_slug):
                 courses = courses[:limit_n]
             except (TypeError, ValueError):
                 pass
-
-        # ✅ AUTO-SYNC: Ensure practice_exams count is accurate for each course
-        for course in courses:
-            actual_count = PracticeTest.objects(course=course).count()
-            if course.practice_exams != actual_count:
-                course.practice_exams = actual_count
-                course.save()
 
         serializer = CourseSerializer(courses, many=True)
         return Response(serializer.data)
@@ -1484,7 +2136,6 @@ def courses_by_category(request, category_slug):
 def courses_by_provider(request, provider_slug):
     try:
         from providers.models import Provider
-        from practice_tests.models import PracticeTest
         from urllib.parse import unquote
 
         provider_slug = unquote(provider_slug).strip()
@@ -1504,12 +2155,6 @@ def courses_by_provider(request, provider_slug):
             except (TypeError, ValueError):
                 pass
 
-        for course in courses:
-            actual_count = PracticeTest.objects(course=course).count()
-            if course.practice_exams != actual_count:
-                course.practice_exams = actual_count
-                course.save()
-
         serializer = CourseSerializer(courses, many=True)
         return Response(serializer.data)
 
@@ -1527,24 +2172,20 @@ def featured_courses(request):
     """Featured courses for homepage Featured Exams and exam-page Popular Exams.
 
     Returns only courses marked is_featured in admin (Popular Exam / Featured checkbox).
+    Optional ?lite=1&limit=8 returns a small card/listing shape.
     Optional ?fallback=1 restores legacy top-category picks when none are featured.
     """
     try:
-        from practice_tests.models import PracticeTest
         from categories.models import Category
+
+        lite = str(request.GET.get("lite", "")).lower() in ("1", "true", "yes")
+        if lite:
+            limit = _positive_int_param(request, "limit", 8, 50)
+            return Response(_featured_course_lite_rows(limit))
 
         featured = _get_admin_featured_courses()
 
         if featured:
-            for course in featured:
-                try:
-                    actual_count = PracticeTest.objects(course=course).count()
-                    if course.practice_exams != actual_count:
-                        course.practice_exams = actual_count
-                        course.save()
-                except Exception:
-                    pass
-
             serializer = CourseSerializer(featured, many=True)
             raw_by_id = _bulk_fetch_course_extra_docs(featured)
             merged = [
@@ -1587,16 +2228,6 @@ def featured_courses(request):
             if latest_course:
                 courses.append(latest_course)
 
-        # ✅ AUTO-SYNC: Ensure practice_exams count is accurate for each course
-        for course in courses:
-            try:
-                actual_count = PracticeTest.objects(course=course).count()
-                if course.practice_exams != actual_count:
-                    course.practice_exams = actual_count
-                    course.save()
-            except Exception:
-                pass  # Skip sync if it fails, continue with existing count
-        
         serializer = CourseSerializer(courses, many=True)
         raw_by_id = _bulk_fetch_course_extra_docs(courses)
         merged = [
@@ -1796,9 +2427,9 @@ def get_pricing_by_slug(request, provider, exam_code):
                     # If still not found, try partial match
                     if not provider_obj:
                         try:
-                            providers = Provider.objects.filter(slug__icontains=provider_slug)
-                            if providers.count() == 1:
-                                provider_obj = providers.first()
+                            provider_obj = _single_or_none(
+                                Provider.objects.filter(slug__icontains=provider_slug)
+                            )
                         except Exception:
                             pass
                 
@@ -1843,9 +2474,13 @@ def get_pricing_by_slug(request, provider, exam_code):
                     # Last resort: try partial slug match
                     if not course:
                         try:
-                            courses = Course.objects.filter(provider=provider_obj, slug__icontains=code_part.lower(), is_active=True)
-                            if courses.count() == 1:
-                                course = courses.first()
+                            course = _single_or_none(
+                                Course.objects.filter(
+                                    provider=provider_obj,
+                                    slug__icontains=code_part.lower(),
+                                    is_active=True,
+                                )
+                            )
                         except Exception:
                             pass
                 
@@ -1853,9 +2488,13 @@ def get_pricing_by_slug(request, provider, exam_code):
                 if not course and provider_obj and code_part:
                     try:
                         code_upper = code_part.upper()
-                        courses = Course.objects.filter(provider=provider_obj, code__iexact=code_upper, is_active=True)
-                        if courses.count() == 1:
-                            course = courses.first()
+                        course = _single_or_none(
+                            Course.objects.filter(
+                                provider=provider_obj,
+                                code__iexact=code_upper,
+                                is_active=True,
+                            )
+                        )
                     except Exception:
                         pass
                 
@@ -1877,12 +2516,14 @@ def get_pricing_by_slug(request, provider, exam_code):
                             exam_code_normalized.upper().replace('-', ''),  # Remove all hyphens
                         ]
                         for code_var in code_variants:
-                            courses = Course.objects.filter(code__iexact=code_var, is_active=True)
-                            if courses.count() == 1:
-                                course = courses.first()
+                            courses = _limited_list(
+                                Course.objects.filter(code__iexact=code_var, is_active=True)
+                            )
+                            if len(courses) == 1:
+                                course = courses[0]
                                 print(f"[DEBUG] Found course by code variant '{code_var}': {course.title}")
                                 break
-                            elif courses.count() > 1:
+                            elif len(courses) > 1:
                                 # If multiple courses found, try to match by provider if we have one
                                 if provider_obj:
                                     matched = courses.filter(provider=provider_obj).first()
@@ -1905,13 +2546,22 @@ def get_pricing_by_slug(request, provider, exam_code):
                                 search_term.replace('-', '_'),
                             ]
                             for term in search_terms:
-                                courses = Course.objects.filter(slug__icontains=term, is_active=True)
-                                if courses.count() == 1:
-                                    course = courses.first()
+                                courses = _limited_list(
+                                    Course.objects.filter(slug__icontains=term, is_active=True)
+                                )
+                                if len(courses) == 1:
+                                    course = courses[0]
                                     print(f"[DEBUG] Found course by slug search term '{term}': {course.title}")
                                     break
-                                elif courses.count() > 1 and provider_obj:
-                                    matched = courses.filter(provider=provider_obj).first()
+                                elif len(courses) > 1 and provider_obj:
+                                    matched = next(
+                                        (
+                                            candidate
+                                            for candidate in courses
+                                            if candidate.provider == provider_obj
+                                        ),
+                                        None,
+                                    )
                                     if matched:
                                         course = matched
                                         print(f"[DEBUG] Found course by slug search term '{term}' with provider match: {course.title}")

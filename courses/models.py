@@ -102,5 +102,24 @@ class Course(Document):
 
     meta = {
         "collection": "courses",
-        "strict": False
+        "strict": False,
+        "indexes": [
+            "slug",
+            "official_details_url_slug",
+            "provider",
+            "category",
+            "is_active",
+            "title",
+            "code",
+            "show_in_official_details",
+            "-created_at",
+            "-updated_at",
+            [("provider", 1), ("code", 1)],
+            [("provider", 1), ("slug", 1)],
+            [("provider", 1), ("is_active", 1)],
+            [("category", 1), ("is_active", 1)],
+            [("is_featured", 1), ("is_active", 1)],
+            [("show_in_official_details", 1), ("created_at", -1)],
+            [("title", 1), ("created_at", -1)],
+        ],
     }
