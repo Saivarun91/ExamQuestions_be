@@ -24,6 +24,55 @@ from exams.models import Question, Exam, TestAttempt, QuestionBank
 from practice_tests.models import PracticeTest
 
 
+def _resolve_practice_test(test_id_raw, course_id_raw=None):
+    """Resolve a PracticeTest from ObjectId, slug, or 1-based index within a course."""
+    test_id_raw = str(test_id_raw or "").strip()
+    if not test_id_raw:
+        return None, "test_id (or category_id) is required"
+
+    if ObjectId.is_valid(test_id_raw):
+        try:
+            return PracticeTest.objects.get(id=ObjectId(test_id_raw)), None
+        except PracticeTest.DoesNotExist:
+            return None, f"No PracticeTest found with ID: {test_id_raw}"
+
+    course_oid = None
+    if course_id_raw is not None:
+        course_id_str = str(course_id_raw).strip()
+        if ObjectId.is_valid(course_id_str):
+            course_oid = ObjectId(course_id_str)
+
+    if course_oid is not None:
+        try:
+            from courses.models import Course
+
+            course = Course.objects.get(id=course_oid)
+            practice_tests = list(getattr(course, "practice_tests", None) or [])
+            for pt in practice_tests:
+                if not pt:
+                    continue
+                if str(pt.id) == test_id_raw or getattr(pt, "slug", None) == test_id_raw:
+                    return pt, None
+
+            try:
+                index = int(test_id_raw) - 1
+                if 0 <= index < len(practice_tests) and practice_tests[index]:
+                    return practice_tests[index], None
+            except (TypeError, ValueError):
+                pass
+        except Exception:
+            pass
+
+    slug_matches = list(PracticeTest.objects(slug=test_id_raw))
+    if len(slug_matches) == 1:
+        return slug_matches[0], None
+
+    return None, (
+        "Invalid practice test id. Open the test from the course admin page, "
+        "or send a valid 24-character test id with course_id."
+    )
+
+
 # -------------------------------
 # CREATE QUESTION
 # -------------------------------
@@ -319,6 +368,10 @@ def create_question(request):
         
         question.save()
 
+        from courses.counts import refresh_course_counts_for_practice_test
+
+        refresh_course_counts_for_practice_test(category)
+
         return JsonResponse({
             "success": True,
             "message": "Question created successfully",
@@ -594,6 +647,11 @@ def update_question(request, question_id):
 
         question.updated_at = datetime.utcnow()
         question.save()
+
+        from courses.counts import refresh_course_counts_for_practice_test
+
+        refresh_course_counts_for_practice_test(question.category)
+
         return JsonResponse({'success': True, 'message': 'Question updated successfully'})
 
     except Question.DoesNotExist:
@@ -636,8 +694,14 @@ def delete_question(request, question_id):
         if not question:
             return JsonResponse({"success": False, "message": "Question not found"}, status=404)
 
+        practice_test = question.category
+
         # ✅ Delete question
         question.delete()
+
+        from courses.counts import refresh_course_counts_for_practice_test
+
+        refresh_course_counts_for_practice_test(practice_test)
 
         return JsonResponse({"success": True, "message": "Question deleted successfully"}, status=200)
 
@@ -841,24 +905,15 @@ def get_questions(request):
     try:
         category_id = request.GET.get('category_id')
         test_id = request.GET.get('test_id')
+        course_id = request.GET.get('course_id')
         id_to_check = test_id or category_id
 
         if not id_to_check:
             return JsonResponse({"success": False, "message": "category_id (or test_id) is required"}, status=400)
 
-        if not ObjectId.is_valid(id_to_check):
-            return JsonResponse({"success": False, "message": "Invalid ID format"}, status=400)
-
-        # Questions are linked to PracticeTest, not TestCategory
-        practice_test = None
-        try:
-            practice_test = PracticeTest.objects.get(id=ObjectId(id_to_check))
-        except PracticeTest.DoesNotExist:
-            # If not a PracticeTest, we can't get questions since they're linked to PracticeTest
-            return JsonResponse({
-                "success": False,
-                "message": f"No PracticeTest found with ID: {id_to_check}. Questions are linked to PracticeTest."
-            }, status=404)
+        practice_test, resolve_error = _resolve_practice_test(id_to_check, course_id)
+        if resolve_error:
+            return JsonResponse({"success": False, "message": resolve_error}, status=404 if "not found" in resolve_error.lower() else 400)
 
         # Filter questions by PracticeTest
         all_questions = list(Question.objects.filter(category=practice_test))
@@ -1042,29 +1097,19 @@ def upload_questions_csv(request):
                 "message": "CSV file and test_id (or course_id or category_id) are required"
             }, status=400)
 
-        if not ObjectId.is_valid(id_to_check):
-            return JsonResponse({
-                "success": False,
-                "message": "Invalid ID format"
-            }, status=400)
-
         # Try to find PracticeTest first (if test_id is provided)
         practice_test = None
         test_category = None
         
         if test_id:
-            try:
-                practice_test = PracticeTest.objects.get(id=ObjectId(test_id))
-                # Get the TestCategory from the PracticeTest for CSVFile
-                if practice_test.category:
-                    test_category = practice_test.category
-                elif practice_test.course and practice_test.course.category:
-                    test_category = practice_test.course.category
-            except PracticeTest.DoesNotExist:
-                return JsonResponse({
-                    "success": False,
-                    "message": f"PracticeTest not found with ID: {test_id}"
-                }, status=404)
+            practice_test, resolve_error = _resolve_practice_test(test_id, course_id)
+            if resolve_error:
+                status = 404 if "not found" in resolve_error.lower() else 400
+                return JsonResponse({"success": False, "message": resolve_error}, status=status)
+            if practice_test.category:
+                test_category = practice_test.category
+            elif practice_test.course and practice_test.course.category:
+                test_category = practice_test.course.category
         elif course_id:
             # If course_id is provided, find or create a test for this course
             from courses.models import Course
@@ -1546,6 +1591,11 @@ def upload_questions_csv(request):
             else:
                 # Just update the timestamp, preserve the question limit
                 practice_test.update(set__updated_at=datetime.utcnow())
+
+            from courses.counts import refresh_course_counts_for_practice_test
+
+            practice_test.reload()
+            refresh_course_counts_for_practice_test(practice_test)
 
         # Build response message
         message_parts = [f"{questions_created} question(s) created"]

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Course
+from .code_utils import display_course_code
 import datetime
 
 class CourseSerializer(serializers.Serializer):
@@ -123,7 +124,10 @@ class CourseSerializer(serializers.Serializer):
             'provider_slug': provider_slug,
             'exam_name': getattr(instance, 'exam_name', None),
             'title': getattr(instance, 'title', getattr(instance, 'name', '')),
-            'code': getattr(instance, 'code', ''),
+            'code': display_course_code(
+                getattr(instance, 'code', ''),
+                getattr(instance, 'slug', ''),
+            ),
             'slug': getattr(instance, 'slug', ''),
             'practice_exams': getattr(instance, 'practice_exams', 0),
             'questions': getattr(instance, 'questions', 0),
@@ -304,7 +308,10 @@ class CourseListSerializer(serializers.Serializer):
             "exam_name": getattr(instance, "exam_name", None),
             "title": getattr(instance, "title", getattr(instance, "name", "")),
             "name": getattr(instance, "title", getattr(instance, "name", "")),
-            "code": getattr(instance, "code", ""),
+            "code": display_course_code(
+                getattr(instance, "code", ""),
+                getattr(instance, "slug", ""),
+            ),
             "slug": getattr(instance, "slug", ""),
             "practice_exams": getattr(instance, "practice_exams", 0),
             "questions": getattr(instance, "questions", 0),

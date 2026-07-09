@@ -22,7 +22,12 @@ from common.pagination import (
 
 from .models import Course
 from .serializers import CourseListSerializer, CourseSerializer
-from .counts import sync_course_counts
+from .counts import (
+    bulk_course_practice_stats,
+    resolve_public_course_counts,
+    sync_course_counts,
+)
+from .code_utils import display_course_code, internal_course_code
 
 
 def _provider_input_is_empty(provider_input):
@@ -289,7 +294,7 @@ def _featured_course_lite_rows(limit=8):
             "provider_slug": (providers.get(doc.get("provider")) or {}).get("slug"),
             "title": doc.get("title") or "",
             "name": doc.get("title") or "",
-            "code": doc.get("code") or "",
+            "code": display_course_code(doc.get("code"), doc.get("slug")),
             "slug": doc.get("slug") or "",
             "badge": doc.get("badge") or "",
             "is_featured": bool(doc.get("is_featured", False)),
@@ -624,7 +629,13 @@ def _admin_course_manager_query(manager):
     if manager == "official_details":
         return _admin_course_official_details_query()
     if manager == "practice_tests":
-        return {}
+        return {
+            "$or": [
+                {"show_in_official_details": {"$ne": True}},
+                _admin_course_exam_details_query(),
+                {"$expr": _admin_course_distinct_official_slug_expr()},
+            ]
+        }
     return {}
 
 
@@ -753,9 +764,6 @@ def _course_listing_visibility_match():
 
 def _public_course_list_from_raw(query=None):
     """Fast public /api/courses/?lite=1 shape without per-course dereferencing."""
-    from categories.models import Category
-    from providers.models import Provider
-
     query = query or {}
     text_present = lambda field: {
         "$gt": [{"$strLenCP": {"$ifNull": [f"${field}", ""]}}, 0]
@@ -806,74 +814,7 @@ def _public_course_list_from_raw(query=None):
         {"$match": _course_listing_visibility_match()},
     ]))
 
-    provider_ids = {
-        doc.get("provider")
-        for doc in docs
-        if isinstance(doc.get("provider"), ObjectId)
-    }
-    category_ids = {
-        doc.get("category")
-        for doc in docs
-        if isinstance(doc.get("category"), ObjectId)
-    }
-
-    providers = {
-        doc["_id"]: doc
-        for doc in Provider._get_collection().find(
-            {"_id": {"$in": list(provider_ids)}},
-            {"name": 1, "slug": 1},
-        )
-    } if provider_ids else {}
-    categories = {
-        doc["_id"]: doc
-        for doc in Category._get_collection().find(
-            {"_id": {"$in": list(category_ids)}},
-            {"title": 1, "slug": 1},
-        )
-    } if category_ids else {}
-
-    rows = []
-    for doc in docs:
-        provider_doc = providers.get(doc.get("provider")) or {}
-        category_doc = categories.get(doc.get("category")) or {}
-        title = doc.get("title") or doc.get("name") or ""
-
-        rows.append({
-            "id": str(doc.get("_id")),
-            "provider": provider_doc.get("name") or "",
-            "provider_id": (
-                str(doc.get("provider"))
-                if isinstance(doc.get("provider"), ObjectId)
-                else None
-            ),
-            "provider_slug": provider_doc.get("slug"),
-            "exam_name": doc.get("exam_name"),
-            "title": title,
-            "name": title,
-            "code": doc.get("code") or "",
-            "slug": doc.get("slug") or "",
-            "practice_exams": doc.get("practice_exams") or 0,
-            "questions": doc.get("questions") or 0,
-            "badge": doc.get("badge"),
-            "category": category_doc.get("title"),
-            "category_slug": category_doc.get("slug"),
-            "actual_price": doc.get("actual_price") or 0.0,
-            "offer_price": doc.get("offer_price") or 0.0,
-            "currency": doc.get("currency") or "INR",
-            "is_featured": bool(doc.get("is_featured", False)),
-            "show_in_official_details": bool(
-                doc.get("show_in_official_details", False)
-            ),
-            "official_details_url_slug": doc.get("official_details_url_slug"),
-            "has_exam_details": bool(doc.get("has_exam_details", False)),
-            "meta_title": doc.get("meta_title"),
-            "meta_keywords": doc.get("meta_keywords"),
-            "meta_description": doc.get("meta_description"),
-            "is_active": doc.get("is_active", True),
-            "updated_at": doc.get("updated_at"),
-        })
-
-    return rows
+    return _public_course_rows_from_docs(docs)
 
 
 def _public_course_paginated_list_from_raw(query=None, page=1, page_size=12):
@@ -1020,7 +961,7 @@ def _public_course_rows_from_docs(docs):
             "exam_name": doc.get("exam_name"),
             "title": title,
             "name": title,
-            "code": doc.get("code") or "",
+            "code": display_course_code(doc.get("code"), doc.get("slug")),
             "slug": doc.get("slug") or "",
             "practice_exams": doc.get("practice_exams") or 0,
             "questions": doc.get("questions") or 0,
@@ -1042,6 +983,17 @@ def _public_course_rows_from_docs(docs):
             "is_active": doc.get("is_active", True),
             "updated_at": doc.get("updated_at"),
         })
+
+    live_stats = bulk_course_practice_stats([row["id"] for row in rows])
+    for row in rows:
+        counts = resolve_public_course_counts(
+            row["id"],
+            row.get("practice_exams"),
+            row.get("questions"),
+            live_stats,
+        )
+        row["practice_exams"] = counts["practice_exams"]
+        row["questions"] = counts["questions"]
 
     return rows
 
@@ -1286,7 +1238,7 @@ def course_create(request):
 
         # Store slug exactly as entered in admin (trim whitespace only)
         slug = str(data['slug']).strip()
-        code = str(data.get('code') or '').strip() or slug
+        code = internal_course_code(data.get('code'), slug)
         title = str(data['title']).strip()
 
         duplicate_message, duplicate_field = _course_duplicate_message(
@@ -1774,8 +1726,8 @@ def course_update(request, course_id):
             new_code = str(data.get('code') or '').strip()
             if new_code:
                 course.code = new_code
-            elif not getattr(course, 'code', None):
-                course.code = str(course.slug or '').strip() or 'exam'
+            else:
+                course.code = internal_course_code("", course.slug)
         if 'slug' in data:
             course.slug = str(data['slug']).strip()
         if 'exam_name' in data:
