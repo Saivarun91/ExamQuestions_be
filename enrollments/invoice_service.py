@@ -165,7 +165,10 @@ def _prepare_invoice_html_for_pdf(html):
     """Flatten invoice HTML for PDF so only the invoice card is printed cleanly."""
     pdf_css = """
     <style>
-      @page { margin: 0; size: auto; }
+      @page {
+            size: A4 landscape;
+            margin: 0;
+        }
       html, body {
         margin: 0 !important;
         padding: 0 !important;
