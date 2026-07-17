@@ -511,6 +511,159 @@ def _find_official_details_sibling(course):
     return None, None
 
 
+def _course_has_practice_hub_content(course, extra_doc=None):
+    """True when the course is a practice hub (tests and/or topics)."""
+    if not course:
+        return False
+
+    practice_list = getattr(course, "practice_tests_list", None) or []
+    if not isinstance(practice_list, list):
+        practice_list = []
+    if practice_list:
+        return True
+
+    if int(getattr(course, "practice_exams", 0) or 0) > 0:
+        return True
+
+    topics = getattr(course, "topics", None) or []
+    if isinstance(topics, list) and len(topics) > 0:
+        return True
+
+    return False
+
+
+_OFFICIAL_SLUG_SUFFIXES = (
+    "-certification-information",
+    "-exam-info",
+    "-certification",
+    "-information",
+    "-info",
+)
+_PRACTICE_HUB_SLUG_SUFFIXES = (
+    "-practice-test",
+    "-practice-exam",
+    "-free-practice-test",
+    "-free-test",
+)
+
+
+def _strip_official_or_practice_slug_base(slug=""):
+    base = str(slug or "").strip().lower()
+    if not base:
+        return ""
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _OFFICIAL_SLUG_SUFFIXES + _PRACTICE_HUB_SLUG_SUFFIXES:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)].rstrip("-")
+                changed = True
+                break
+    return base
+
+
+def _find_practice_sibling_for_official(course, extra_doc=None):
+    """
+    Find the practice/exam-details course linked to an official-details course.
+    Prefer same provider + code, then same slug family (...-practice-test, etc.).
+    """
+    if not course:
+        return None
+
+    codes = []
+    code = str(getattr(course, "code", "") or "").strip()
+    if code:
+        codes.append(code)
+
+    stat_code = ""
+    if extra_doc and extra_doc.get("official_details_stat_exam_code"):
+        stat_code = str(extra_doc.get("official_details_stat_exam_code") or "").strip()
+    if not stat_code:
+        stat_code = str(
+            getattr(course, "official_details_stat_exam_code", None) or ""
+        ).strip()
+    if stat_code and stat_code.lower() not in {c.lower() for c in codes}:
+        codes.append(stat_code)
+
+    best = None
+    best_score = -1
+
+    def consider(sibling):
+        nonlocal best, best_score
+        if not sibling or str(sibling.id) == str(course.id):
+            return
+        if not _course_has_practice_hub_content(sibling):
+            return
+        score = 0
+        sibling_code = str(getattr(sibling, "code", "") or "").strip()
+        if sibling_code and any(sibling_code.lower() == c.lower() for c in codes):
+            score += 500
+        practice_list = getattr(sibling, "practice_tests_list", None) or []
+        if isinstance(practice_list, list):
+            score += min(len(practice_list), 10) * 10
+        score += int(getattr(sibling, "practice_exams", 0) or 0)
+        # Prefer non-official-only records as the practice destination.
+        if not _parse_bool(getattr(sibling, "show_in_official_details", False), default=False):
+            score += 50
+        if score > best_score:
+            best_score = score
+            best = sibling
+
+    for code_value in codes:
+        query = Course.objects(
+            code__iexact=code_value,
+            id__ne=course.id,
+            is_active=True,
+        )
+        if course.provider:
+            query = query.filter(provider=course.provider)
+        for sibling in query:
+            consider(sibling)
+
+    if best:
+        return best
+
+    # Slug-family fallback (no code / code mismatch).
+    base = _strip_official_or_practice_slug_base(getattr(course, "slug", "") or "")
+    if not base:
+        return None
+
+    for suffix in _PRACTICE_HUB_SLUG_SUFFIXES + ("",):
+        candidate_slug = f"{base}{suffix}" if suffix else base
+        try:
+            sibling = Course.objects.get(slug=candidate_slug)
+        except Course.DoesNotExist:
+            try:
+                sibling = Course.objects.get(slug__iexact=candidate_slug)
+            except Course.DoesNotExist:
+                sibling = None
+        if sibling:
+            consider(sibling)
+
+    return best
+
+
+def _attach_linked_practice_slug(serialized, course, extra_doc=None):
+    """Expose verified practice-hub slug for official-details Start Practicing CTAs."""
+    out = dict(serialized or {})
+    if out.get("linked_practice_slug"):
+        return out
+
+    # If this course itself is the practice hub, expose its own slug.
+    if _course_has_practice_hub_content(course, extra_doc):
+        own_slug = str(getattr(course, "slug", "") or "").strip()
+        if own_slug:
+            out["linked_practice_slug"] = own_slug
+            return out
+
+    sibling = _find_practice_sibling_for_official(course, extra_doc)
+    if sibling:
+        sibling_slug = str(getattr(sibling, "slug", "") or "").strip()
+        if sibling_slug:
+            out["linked_practice_slug"] = sibling_slug
+    return out
+
+
 def _merge_linked_official_details_response(serialized, raw, course):
     """Attach official-details fields from a sibling course when this record has none."""
     if _has_official_details_data(course, raw):
@@ -1671,6 +1824,7 @@ def course_detail(request, course_identifier):
         merged_data, merged_raw = _merge_linked_official_details_response(
             serializer.data, raw, course
         )
+        merged_data = _attach_linked_practice_slug(merged_data, course, merged_raw)
         return Response(_merge_course_extra_from_doc(merged_data, merged_raw))
 
     except Course.DoesNotExist:
