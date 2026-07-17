@@ -161,33 +161,53 @@ def get_invoice_html_for_payment(payment, enrollment=None, user=None):
     return render_builtin_invoice_download(ctx)
 
 
-def _prepare_invoice_html_for_pdf(html):
+def _prepare_invoice_html_for_pdf(html, *, for_xhtml2pdf=False):
     """Flatten invoice HTML for PDF so only the invoice card is printed cleanly."""
-    pdf_css = """
-    <style>
+    # Portrait only — landscape @page previously swapped width/height and split
+    # the invoice across multiple broken pages in Chromium/xhtml2pdf.
+    if for_xhtml2pdf:
+        page_css = """
       @page {
-            size: A4 landscape;
-            margin: 0;
-        }
-      html, body {
+        size: A4 portrait;
+        margin: 12mm;
+      }
+"""
+    else:
+        # Playwright uses explicit px page size; keep @page margin-only so CSS
+        # cannot override orientation or force a second page.
+        page_css = """
+      @page {
+        margin: 0;
+      }
+"""
+    pdf_css = f"""
+    <style>
+      {page_css}
+      html, body {{
         margin: 0 !important;
         padding: 0 !important;
         background: #ffffff !important;
         height: auto !important;
         min-height: 0 !important;
-        overflow: hidden !important;
-      }
+        overflow: visible !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }}
       body > table,
       body > table > tbody > tr,
-      body > table > tbody > tr > td {
+      body > table > tbody > tr > td {{
         margin: 0 !important;
         padding: 0 !important;
         height: auto !important;
         vertical-align: top !important;
-      }
-      body table {
+      }}
+      body table {{
         box-shadow: none !important;
-      }
+      }}
+      img {{
+        max-width: 100% !important;
+        height: auto !important;
+      }}
     </style>
     """
     optimized = html
@@ -238,26 +258,31 @@ def _generate_pdf_with_playwright(html):
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 640, "height": 800})
+            page = browser.new_page(viewport={"width": 680, "height": 1000})
             page.set_content(html, wait_until="networkidle")
-            content_height = page.evaluate(
+            metrics = page.evaluate(
                 """() => {
                   const card = Array.from(document.querySelectorAll('table')).find((table) => {
                     const style = table.getAttribute('style') || '';
                     return style.includes('max-width:640px');
-                  });
-                  if (!card) {
-                    return Math.ceil(document.body.scrollHeight);
-                  }
-                  const bottom = Math.ceil(card.getBoundingClientRect().bottom);
-                  return bottom + 2;
+                  }) || document.body;
+                  const rect = card.getBoundingClientRect();
+                  return {
+                    width: Math.ceil(Math.max(rect.width, 640)),
+                    height: Math.ceil(Math.max(rect.height, document.body.scrollHeight, 800)),
+                  };
                 }"""
             )
-            page.set_viewport_size({"width": 640, "height": content_height})
+            width = int(metrics.get("width") or 640)
+            height = int(metrics.get("height") or 900) + 4
+            page.set_viewport_size({"width": width, "height": height})
+            # prefer_css_page_size=False prevents any leftover @page size from
+            # forcing landscape / multi-page output.
             pdf_bytes = page.pdf(
-                width="640px",
-                height=f"{content_height}px",
+                width=f"{width}px",
+                height=f"{height}px",
                 print_background=True,
+                prefer_css_page_size=False,
                 margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
             )
             browser.close()
@@ -285,11 +310,12 @@ def _generate_pdf_with_xhtml2pdf(html):
 def get_invoice_pdf_for_payment(payment, enrollment=None, user=None):
     """Return invoice bytes as a PDF generated from the invoice HTML template."""
     html = get_invoice_html_for_payment(payment, enrollment=enrollment, user=user)
-    html = _prepare_invoice_html_for_pdf(html)
     # Prefer Chromium print-to-PDF for near pixel-perfect HTML parity.
-    pdf_bytes = _generate_pdf_with_playwright(html)
+    playwright_html = _prepare_invoice_html_for_pdf(html, for_xhtml2pdf=False)
+    pdf_bytes = _generate_pdf_with_playwright(playwright_html)
     if not pdf_bytes:
-        pdf_bytes = _generate_pdf_with_xhtml2pdf(html)
+        xhtml_html = _prepare_invoice_html_for_pdf(html, for_xhtml2pdf=True)
+        pdf_bytes = _generate_pdf_with_xhtml2pdf(xhtml_html)
     if not pdf_bytes:
         raise RuntimeError("Invoice PDF is empty")
     return pdf_bytes

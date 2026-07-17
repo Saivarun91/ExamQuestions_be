@@ -12,7 +12,10 @@ from pathlib import Path
 from .utils import replace_template_variables
 
 DEFAULT_ISSUED_BY = "TutorKhoj Private Limited"
-DEFAULT_COMPANY_ADDRESS = os.getenv("INVOICE_COMPANY_ADDRESS", "").strip()
+DEFAULT_COMPANY_ADDRESS = os.getenv(
+    "INVOICE_COMPANY_ADDRESS",
+    "202, Serinity Diamond Apt, Gopanpally, Hyderabad, Telangana, India 500046",
+).strip()
 DEFAULT_ISSUER_GSTIN = os.getenv("INVOICE_GSTIN", "").strip()
 DEFAULT_BANK_NAME = os.getenv("INVOICE_BANK_NAME", "Wardiere")
 DEFAULT_ACCOUNT_NO = os.getenv("INVOICE_ACCOUNT_NO", "0123 4567 8901")
@@ -80,8 +83,8 @@ DEFAULT_INVOICE_HTML = """<!DOCTYPE html>
                 <tr><td><strong>Issued by :</strong> {{issued_by}}</td></tr>
                 <tr><td><strong>Invoice no :</strong> {{invoice_number}}</td></tr>
                 <tr><td><strong>Date :</strong> {{invoice_date}}</td></tr>
-                {{#if customer_gstin}}
-                <tr><td><strong>GSTIN :</strong> {{customer_gstin}}</td></tr>
+                {{#if invoice_gstin}}
+                <tr><td><strong>GSTIN :</strong> {{invoice_gstin}}</td></tr>
                 {{/if}}
                 <tr><td><strong>Transaction ID :</strong> {{transaction_id}}</td></tr>
               </table>
@@ -213,15 +216,26 @@ def _get_company_invoice_details():
         from settings_app.models import AdminSettings, ContactUs
 
         settings_obj = AdminSettings.objects.first()
-        if settings_obj and not address:
-            address = (getattr(settings_obj, "contact_address", "") or "").strip()
+        if settings_obj:
+            settings_address = (getattr(settings_obj, "contact_address", "") or "").strip()
+            if settings_address:
+                address = settings_address
+            settings_gstin = (
+                getattr(settings_obj, "gstin", None)
+                or getattr(settings_obj, "gst_id", None)
+                or getattr(settings_obj, "company_gstin", None)
+                or ""
+            )
+            settings_gstin = str(settings_gstin).strip()
+            if settings_gstin:
+                gstin = settings_gstin
         if not address:
             contact = ContactUs.objects.first()
             if contact:
                 address = (getattr(contact, "contact_address", "") or "").strip()
     except Exception as exc:
         print(f"Warning: Could not load company invoice details: {exc}")
-    return address, gstin
+    return address or DEFAULT_COMPANY_ADDRESS, gstin
 
 
 def _format_address_html(address):
@@ -273,12 +287,11 @@ def _fallback_logo_bytes():
             return data, _guess_image_mimetype(str(path), "", data)
 
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="210" height="48" viewBox="0 0 210 48">
+<svg xmlns="http://www.w3.org/2000/svg" width="230" height="48" viewBox="0 0 230 48">
   <rect x="0" y="4" width="40" height="40" rx="6" fill="{INVOICE_BLUE}"/>
-  <rect x="28" y="0" width="14" height="14" rx="2" fill="{INVOICE_BLUE_DARK}" opacity="0.85"/>
-  <path d="M11 30 L17 14 L21 14 L17 30 Z M19 22 L27 22 L27 25 L19 25 Z" fill="#ffffff"/>
-  <text x="50" y="21" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" fill="{INVOICE_BLUE}">All Exam</text>
-  <text x="50" y="39" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" fill="{INVOICE_BLUE}">Questions</text>
+  <path d="M12 30 L18 14 L22 14 L16 30 Z M20 22 L28 22 L28 25 L20 25 Z" fill="#ffffff"/>
+  <path d="M24 14 L30 28 L27 30 L21 16 Z" fill="#ffffff" opacity="0.9"/>
+  <text x="50" y="31" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" fill="{INVOICE_BLUE}">All Exam Questions</text>
 </svg>"""
     return svg.encode("utf-8"), "image/svg+xml"
 
@@ -354,6 +367,15 @@ def enrich_invoice_context(context):
     gst_raw = ctx.get("gst_amount", "")
     ctx.setdefault("discount_display", "-" if _is_zero_amount(discount_raw) else discount_raw)
     ctx.setdefault("tax_display", "-" if _is_zero_amount(gst_raw) else gst_raw)
+
+    # Invoice To GSTIN = issuer GSTIN (matches screenshot); fall back to customer.
+    issuer = str(ctx.get("issuer_gstin") or "").strip()
+    customer = str(ctx.get("customer_gstin") or ctx.get("gst_id") or "").strip()
+    if customer in ("N/A", "-", "None"):
+        customer = ""
+    if issuer in ("N/A", "-", "None"):
+        issuer = ""
+    ctx["invoice_gstin"] = issuer or customer
     return ctx
 
 
