@@ -1,5 +1,6 @@
 """Invoice context and HTML/PDF generation for payments."""
 import base64
+import os
 import tempfile
 from io import BytesIO
 
@@ -221,28 +222,90 @@ def _prepare_invoice_html_for_pdf(html, *, for_xhtml2pdf=False):
     return optimized
 
 
-def _invoice_pdf_link_callback(uri, _rel):
-    """Allow xhtml2pdf to load embedded data-URI images from invoice HTML."""
+def _invoice_pdf_link_callback(uri, rel):
+    """Resolve local file / data-URI assets for xhtml2pdf."""
     if not isinstance(uri, str):
         return uri
+    uri = uri.strip().strip('"').strip("'")
+
     if uri.startswith("data:"):
         try:
             header, encoded = uri.split(",", 1)
             data = base64.b64decode(encoded)
-            suffix = ".png"
-            if "svg" in header:
-                suffix = ".svg"
-            elif "jpeg" in header or "jpg" in header:
+            suffix = ".bin"
+            header_l = header.lower()
+            if "png" in header_l:
+                suffix = ".png"
+            elif "jpeg" in header_l or "jpg" in header_l:
                 suffix = ".jpg"
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp.write(data)
-            tmp.close()
-            return tmp.name
+            elif "svg" in header_l:
+                suffix = ".svg"
+            elif "font" in header_l or "ttf" in header_l:
+                suffix = ".ttf"
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            return tmp_path
         except (ValueError, TypeError, OSError):
             return None
-    if uri.startswith("file://"):
-        return uri[7:]
+
+    # Resolve relative to xhtml2pdf base path (email_templates/).
+    candidates = [uri]
+    if rel:
+        candidates.append(os.path.join(rel, uri))
+    try:
+        from email_templates.invoice_template import FONTS_DIR
+
+        base = str(FONTS_DIR.parent.resolve())
+        candidates.append(os.path.join(base, uri))
+        candidates.append(os.path.join(base, uri.replace("/", os.sep)))
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
     return uri
+
+
+def _register_invoice_pdf_fonts():
+    """Register Unicode fonts so ₹ and other symbols render in xhtml2pdf."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfbase.pdfmetrics import registerFontFamily
+        from email_templates.invoice_template import DEJAVU_REGULAR, DEJAVU_BOLD
+    except Exception as exc:
+        print(f"Warning: Could not import invoice PDF font deps: {exc}")
+        return False
+
+    if not DEJAVU_REGULAR.is_file():
+        print(
+            "Warning: DejaVuSans.ttf missing under email_templates/fonts/ — "
+            "₹ may not render in production PDFs"
+        )
+        return False
+
+    try:
+        registered = set(pdfmetrics.getRegisteredFontNames())
+        if "InvoiceSans" not in registered:
+            pdfmetrics.registerFont(TTFont("InvoiceSans", str(DEJAVU_REGULAR.resolve())))
+        bold_path = DEJAVU_BOLD if DEJAVU_BOLD.is_file() else DEJAVU_REGULAR
+        if "InvoiceSans-Bold" not in registered:
+            pdfmetrics.registerFont(TTFont("InvoiceSans-Bold", str(bold_path.resolve())))
+        registerFontFamily(
+            "InvoiceSans",
+            normal="InvoiceSans",
+            bold="InvoiceSans-Bold",
+            italic="InvoiceSans",
+            boldItalic="InvoiceSans-Bold",
+        )
+        return True
+    except Exception as exc:
+        print(f"Warning: Could not register invoice PDF fonts: {exc}")
+        return False
 
 
 def _generate_pdf_with_playwright(html):
@@ -252,7 +315,8 @@ def _generate_pdf_with_playwright(html):
     """
     try:
         from playwright.sync_api import sync_playwright
-    except Exception:
+    except Exception as exc:
+        print(f"Invoice PDF: Playwright import failed ({exc}); using xhtml2pdf fallback")
         return None
 
     try:
@@ -276,8 +340,6 @@ def _generate_pdf_with_playwright(html):
             width = int(metrics.get("width") or 640)
             height = int(metrics.get("height") or 900) + 4
             page.set_viewport_size({"width": width, "height": height})
-            # prefer_css_page_size=False prevents any leftover @page size from
-            # forcing landscape / multi-page output.
             pdf_bytes = page.pdf(
                 width=f"{width}px",
                 height=f"{height}px",
@@ -287,19 +349,25 @@ def _generate_pdf_with_playwright(html):
             )
             browser.close()
             return pdf_bytes
-    except Exception:
+    except Exception as exc:
+        print(f"Invoice PDF: Playwright render failed ({exc}); using xhtml2pdf fallback")
         return None
 
 
 def _generate_pdf_with_xhtml2pdf(html):
-    """Fallback PDF renderer for environments without Playwright/Chromium."""
+    """Production-safe PDF renderer (no Chromium required)."""
     from xhtml2pdf import pisa
+    from email_templates.invoice_template import FONTS_DIR
 
+    _register_invoice_pdf_fonts()
     buffer = BytesIO()
+    # Base path so @font-face url(fonts/DejaVuSans.ttf) resolves correctly.
+    base_path = str(FONTS_DIR.parent.resolve()) + os.sep
     pdf_status = pisa.CreatePDF(
         BytesIO(html.encode("utf-8")),
         dest=buffer,
         encoding="utf-8",
+        path=base_path,
         link_callback=_invoice_pdf_link_callback,
     )
     if pdf_status.err:
@@ -309,13 +377,22 @@ def _generate_pdf_with_xhtml2pdf(html):
 
 def get_invoice_pdf_for_payment(payment, enrollment=None, user=None):
     """Return invoice bytes as a PDF generated from the invoice HTML template."""
-    html = get_invoice_html_for_payment(payment, enrollment=enrollment, user=user)
-    # Prefer Chromium print-to-PDF for near pixel-perfect HTML parity.
-    playwright_html = _prepare_invoice_html_for_pdf(html, for_xhtml2pdf=False)
-    pdf_bytes = _generate_pdf_with_playwright(playwright_html)
-    if not pdf_bytes:
-        xhtml_html = _prepare_invoice_html_for_pdf(html, for_xhtml2pdf=True)
-        pdf_bytes = _generate_pdf_with_xhtml2pdf(xhtml_html)
+    from email_templates.invoice_template import render_builtin_invoice_pdf
+
+    # Prefer Chromium when available (localhost / servers with browsers).
+    try:
+        html = get_invoice_html_for_payment(payment, enrollment=enrollment, user=user)
+        playwright_html = _prepare_invoice_html_for_pdf(html, for_xhtml2pdf=False)
+        pdf_bytes = _generate_pdf_with_playwright(playwright_html)
+        if pdf_bytes:
+            return pdf_bytes
+    except Exception as exc:
+        print(f"Invoice PDF: Playwright path error ({exc})")
+
+    # Production fallback: xhtml2pdf-optimized template (fonts + PNG corners).
+    ctx = build_invoice_context(payment, enrollment=enrollment, user=user)
+    xhtml_html = render_builtin_invoice_pdf(ctx)
+    pdf_bytes = _generate_pdf_with_xhtml2pdf(xhtml_html)
     if not pdf_bytes:
         raise RuntimeError("Invoice PDF is empty")
     return pdf_bytes

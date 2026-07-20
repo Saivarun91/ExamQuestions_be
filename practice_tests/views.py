@@ -159,38 +159,13 @@ def create_test(request):
 
     # Auto-generate slug from title if not provided
     if not slug:
-        import re
-        # Convert title to slug: lowercase, replace spaces with hyphens, remove special chars
-        slug = re.sub(r'[^\w\s-]', '', title.lower().strip())
-        slug = re.sub(r'[-\s]+', '-', slug)
-        slug = slug.strip('-')
-        
-        # Ensure slug is not empty
-        if not slug:
-            slug = "test-" + str(ObjectId())
-    
-    # Check if slug already exists in the same course/category and make it unique if needed
-    base_slug = slug
-    counter = 1
-    max_checks = 100
-    
-    while counter <= max_checks:
-        existing_test = None
-        if course:
-            existing_test = PracticeTest.objects(slug=slug, course=course).first()
-        elif category:
-            existing_test = PracticeTest.objects(slug=slug, category=category).first()
-            
-        if not existing_test:
-            break
-            
-        # If slug exists, append a number to make it unique
-        slug = f"{base_slug}-{counter}"
-        counter += 1
-    
-    # If we've checked many times and still have duplicates, use counter for uniqueness
-    if counter > max_checks:
-        slug = f"{base_slug}-{counter}"
+        from practice_tests.slug_utils import allocate_practice_test_slug
+        slug = allocate_practice_test_slug(title, course)
+    else:
+        from practice_tests.slug_utils import allocate_practice_test_slug, _slug_taken
+        slug = str(slug).strip()
+        if _slug_taken(slug):
+            slug = allocate_practice_test_slug(slug, course)
     
     # Create test directly using the model
     # Retry logic for handling duplicate slugs
@@ -342,7 +317,7 @@ def delete_test(request, slug):
     if ObjectId.is_valid(slug):
         try:
             test = PracticeTest.objects(id=ObjectId(slug)).first()
-        except:
+        except Exception:
             pass
     
     if not test:
@@ -351,18 +326,44 @@ def delete_test(request, slug):
     if not test:
         return Response({"error": "Test not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    course_ref = test.course if hasattr(test, 'course') and test.course else None
-    
+    course_ref = None
+    try:
+        course_ref = test.course if getattr(test, "course", None) else None
+    except Exception:
+        course_ref = None
+
+    test_id = str(test.id)
     test.delete()
-    
-    # Update the course's practice_exams and questions count
-    if course_ref:
+
+    # Remove dangling reference from the course's practice_tests list
+    if course_ref is not None:
         try:
-            sync_course_counts(course_ref)
+            refs = list(getattr(course_ref, "practice_tests", None) or [])
+            cleaned = []
+            for ref in refs:
+                try:
+                    if ref and str(ref.id) != test_id:
+                        cleaned.append(ref)
+                except Exception:
+                    continue
+            course_ref.practice_tests = cleaned
+            try:
+                sync_course_counts(course_ref, save=False)
+            except TypeError:
+                # Older signature without save kwarg
+                sync_course_counts(course_ref)
+            course_ref.save()
         except Exception as e:
-            print(f"Error updating course counts after test deletion: {e}")
+            print(f"Error updating course after test deletion: {e}")
+            try:
+                sync_course_counts(course_ref)
+            except Exception as sync_err:
+                print(f"Error updating course counts after test deletion: {sync_err}")
     
-    return Response({"message": "Test deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+    return Response(
+        {"success": True, "message": "Test deleted successfully"},
+        status=status.HTTP_200_OK,
+    )
 
 
 # ✅ Get tests by category (for backward compatibility)

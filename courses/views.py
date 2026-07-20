@@ -539,10 +539,15 @@ _OFFICIAL_SLUG_SUFFIXES = (
     "-information",
     "-info",
 )
+# Longest-first so stripping/probing prefer plural & free-* variants used in production.
 _PRACTICE_HUB_SLUG_SUFFIXES = (
-    "-practice-test",
-    "-practice-exam",
+    "-free-practice-exams",
+    "-free-practice-tests",
     "-free-practice-test",
+    "-practice-exams",
+    "-practice-tests",
+    "-practice-exam",
+    "-practice-test",
     "-free-test",
 )
 
@@ -639,6 +644,23 @@ def _find_practice_sibling_for_official(course, extra_doc=None):
                 sibling = None
         if sibling:
             consider(sibling)
+
+    # Catch production variants not listed above (e.g. "-online-practice-exams").
+    if best is None:
+        try:
+            for sibling in Course.objects.filter(
+                slug__istartswith=f"{base}-",
+                is_active=True,
+                id__ne=course.id,
+            ):
+                sibling_slug = str(getattr(sibling, "slug", "") or "").strip().lower()
+                if not sibling_slug.startswith(f"{base}-"):
+                    continue
+                remainder = sibling_slug[len(base) + 1 :]
+                if remainder.startswith("practice") or remainder.startswith("free-"):
+                    consider(sibling)
+        except Exception:
+            pass
 
     return best
 
@@ -926,7 +948,19 @@ def _public_course_list_from_raw(query=None):
     }
     docs = list(Course._get_collection().aggregate([
         {"$match": query},
-        {"$sort": {"created_at": -1}},
+        {
+            "$addFields": {
+                "_has_questions": {
+                    "$cond": [
+                        {"$gt": [{"$ifNull": ["$questions", 0]}, 0]},
+                        1,
+                        0,
+                    ]
+                }
+            }
+        },
+        # Exams with questions first; oldest first so newest land on later pages
+        {"$sort": {"_has_questions": -1, "created_at": 1}},
         {
             "$project": {
                 "provider": 1,
@@ -1020,7 +1054,19 @@ def _public_course_paginated_list_from_raw(query=None, page=1, page_size=12):
     }
     facet_pipeline = [
         {"$match": query},
-        {"$sort": {"created_at": -1}},
+        {
+            "$addFields": {
+                "_has_questions": {
+                    "$cond": [
+                        {"$gt": [{"$ifNull": ["$questions", 0]}, 0]},
+                        1,
+                        0,
+                    ]
+                }
+            }
+        },
+        # Exams with questions first; oldest first so newest land on later pages
+        {"$sort": {"_has_questions": -1, "created_at": 1}},
         project_stage,
         {"$match": _course_listing_visibility_match()},
         {
@@ -1282,6 +1328,7 @@ def course_list(request):
 def admin_course_list(request):
     try:
         page, page_size = parse_pagination_params(request)
+        lite = str(request.GET.get("lite") or "").lower() in ("1", "true", "yes")
         raw_query = _admin_course_query(request)
         courses = Course.objects(__raw__=raw_query) if raw_query else Course.objects.all()
         courses, _ordering = apply_allowlisted_ordering(
@@ -1302,12 +1349,16 @@ def admin_course_list(request):
         page_courses, pagination = paginate_mongoengine_queryset(courses, page, page_size)
         page_courses = list(page_courses)
 
-        serializer = CourseSerializer(page_courses, many=True)
-        extras = _bulk_fetch_course_extra_docs(page_courses)
-        merged = [
-            _merge_course_extra_from_doc(item, extras.get(item.get("id")))
-            for item in serializer.data
-        ]
+        if lite:
+            serializer = CourseListSerializer(page_courses, many=True)
+            merged = serializer.data
+        else:
+            serializer = CourseSerializer(page_courses, many=True)
+            extras = _bulk_fetch_course_extra_docs(page_courses)
+            merged = [
+                _merge_course_extra_from_doc(item, extras.get(item.get("id")))
+                for item in serializer.data
+            ]
         return Response(
             paginated_admin_payload(
                 merged,
@@ -1966,22 +2017,23 @@ def course_update(request, course_id):
                 setattr(course, field, data[field])
 
         # ✅ AUTO-SYNC: Sync practice_tests_list to PracticeTest collection and update references
+        practice_test_sync_warnings = []
         if 'practice_tests_list' in data and isinstance(data['practice_tests_list'], list):
             from practice_tests.models import PracticeTest
-            from django.utils.text import slugify
+            from practice_tests.slug_utils import allocate_practice_test_slug
             import datetime
             from pymongo.errors import DuplicateKeyError
             
             synced_tests = []
             for test_data in data['practice_tests_list']:
-                if not test_data.get('name'):
-                    continue  # Skip tests without a name
+                test_name = str(test_data.get('name') or '').strip()
+                if not test_name:
+                    practice_test_sync_warnings.append(
+                        "Skipped a practice test with no name."
+                    )
+                    continue
                 
                 try:
-                    # Generate slug from test name
-                    test_name = test_data.get('name', '')
-                    base_slug = slugify(test_name)
-                    
                     # Try to find existing test by ID first (if provided), then by name AND course
                     existing_test = None
                     test_id = test_data.get('id')
@@ -2002,27 +2054,7 @@ def course_update(request, course_id):
                         practice_test = existing_test
                         print(f"   📝 Updating existing test '{test_name}' for course '{course.title}'")
                     else:
-                        # Create new test with unique slug for this course
-                        # First try with simple slug (relying on composite index for uniqueness per course)
-                        slug = base_slug
-                        counter = 1
-                        max_checks = 100
-                        
-                        # Ensure slug is unique for this specific course
-                        while counter <= max_checks:
-                            existing_by_slug = PracticeTest.objects(slug=slug, course=course).first()
-                            if not existing_by_slug:
-                                # Also check if slug exists globally (in case of single-field index)
-                                # If it exists in another course, we can still use it (composite index allows this)
-                                # But if there's a single-field index issue, we'll handle it in the save retry
-                                break
-                            slug = f"{base_slug}-{counter}"
-                            counter += 1
-                        
-                        if counter > max_checks:
-                            # Use counter for uniqueness if needed
-                            slug = f"{base_slug}-{counter}"
-                        
+                        slug = allocate_practice_test_slug(test_name, course)
                         practice_test = PracticeTest(
                             slug=slug,
                             title=test_name,
@@ -2032,9 +2064,7 @@ def course_update(request, course_id):
                         print(f"   ✨ Creating new test '{test_name}' for course '{course.title}' (slug: {slug})")
                     
                     # Update test fields (including title to ensure it matches the sent data)
-                    # Always update title with the value from the request
-                    if test_name:
-                        practice_test.title = test_name
+                    practice_test.title = test_name
                     
                     # Parse duration string (e.g., "90 minutes" -> 90)
                     duration_str = str(test_data.get('duration', '0'))
@@ -2050,12 +2080,16 @@ def course_update(request, course_id):
                     practice_test.duration = duration_int
                     practice_test.difficulty_level = test_data.get('difficulty', 'Intermediate')
                     practice_test.overview = test_data.get('description', '')
-                    
-                    # Save the practice test with retry logic for duplicate key errors
+                    if test_data.get('pass_rate') is not None and test_data.get('pass_rate') != '':
+                        practice_test.pass_rate = int(test_data.get('pass_rate', 0) or 0)
+                    if test_data.get('rating') is not None and test_data.get('rating') != '':
+                        practice_test.rating = float(test_data.get('rating', 0) or 0)
+                    if test_data.get('reviews_count') is not None and test_data.get('reviews_count') != '':
+                        practice_test.reviews_count = int(test_data.get('reviews_count', 0) or 0)
                     practice_test.updated_at = datetime.datetime.utcnow()
                     
-                    # Retry logic to handle any duplicate key errors (e.g., if single-field index exists on slug)
-                    max_retries = 3
+                    # Save with retry for any remaining duplicate-key edge cases
+                    max_retries = 5
                     retry_count = 0
                     saved = False
                     
@@ -2063,32 +2097,23 @@ def course_update(request, course_id):
                         try:
                             practice_test.save()
                             saved = True
-                        except DuplicateKeyError as dke:
+                        except (DuplicateKeyError, Exception) as save_error:
+                            is_duplicate = (
+                                isinstance(save_error, DuplicateKeyError)
+                                or "duplicate key" in str(save_error).lower()
+                                or "E11000" in str(save_error)
+                            )
+                            if not is_duplicate:
+                                raise
                             retry_count += 1
-                            if retry_count < max_retries:
-                                # Generate a new unique slug using counter
-                                practice_test.slug = f"{base_slug}-{retry_count}"
-                                print(f"   🔄 Retry {retry_count}: Generated slug due to duplicate key: {practice_test.slug}")
-                            else:
-                                # Last resort: use counter for uniqueness
-                                practice_test.slug = f"{base_slug}-{retry_count}"
-                                print(f"   🔄 Final retry: Using counter for slug: {practice_test.slug}")
-                                try:
-                                    practice_test.save()
-                                    saved = True
-                                except:
-                                    raise  # Re-raise if still fails
-                        except Exception as save_error:
-                            # Check if it's a duplicate key error (might be wrapped)
-                            if "duplicate key" in str(save_error).lower() or "E11000" in str(save_error):
-                                retry_count += 1
-                                if retry_count < max_retries:
-                                    # Generate a new unique slug using counter
-                                    practice_test.slug = f"{base_slug}-{retry_count}"
-                                    print(f"   🔄 Retry {retry_count}: Generated slug: {practice_test.slug}")
-                                    continue
-                            # For other errors, re-raise immediately
-                            raise
+                            if retry_count >= max_retries:
+                                raise
+                            practice_test.slug = allocate_practice_test_slug(
+                                f"{test_name}-{retry_count}",
+                                course,
+                                existing_test=practice_test if getattr(practice_test, "id", None) else None,
+                            )
+                            print(f"   🔄 Retry {retry_count}: Generated slug: {practice_test.slug}")
                     
                     synced_tests.append({
                         'name': practice_test.title,
@@ -2097,26 +2122,40 @@ def course_update(request, course_id):
                     })
                     
                 except Exception as e:
-                    print(f"   ⚠️  Error syncing test '{test_data.get('name')}': {str(e)}")
+                    warning = f"Failed to sync practice test '{test_name}': {str(e)}"
+                    practice_test_sync_warnings.append(warning)
+                    print(f"   ⚠️  Error syncing test '{test_name}': {str(e)}")
                     import traceback
                     traceback.print_exc()
-                    # Continue with other tests even if one fails
                     continue
             
             # ✅ Update practice_tests reference field in course document
-            if synced_tests:
-                # Get all synced PracticeTest objects
-                synced_practice_test_ids = [st['id'] for st in synced_tests]
-                synced_practice_tests = []
-                for pt_id in synced_practice_test_ids:
-                    try:
-                        pt = PracticeTest.objects.get(id=ObjectId(pt_id))
-                        synced_practice_tests.append(pt)
-                    except PracticeTest.DoesNotExist:
-                        continue
-                
-                # Update course's practice_tests reference field
-                course.practice_tests = synced_practice_tests
+            # Always set (including empty) so deletions actually clear references
+            synced_practice_test_ids = [st['id'] for st in synced_tests]
+            synced_practice_tests = []
+            for pt_id in synced_practice_test_ids:
+                try:
+                    pt = PracticeTest.objects.get(id=ObjectId(pt_id))
+                    synced_practice_tests.append(pt)
+                except PracticeTest.DoesNotExist:
+                    continue
+
+            course.practice_tests = synced_practice_tests
+
+            # ✅ Delete PracticeTest documents removed from the submitted list
+            keep_ids = set(synced_practice_test_ids)
+            try:
+                existing_for_course = list(PracticeTest.objects(course=course))
+                for pt in existing_for_course:
+                    pt_id = str(pt.id)
+                    if pt_id not in keep_ids:
+                        try:
+                            pt.delete()
+                            print(f"   🗑️  Deleted removed practice test '{getattr(pt, 'title', pt_id)}' ({pt_id})")
+                        except Exception as del_err:
+                            print(f"   ⚠️  Failed to delete practice test {pt_id}: {del_err}")
+            except Exception as orphan_err:
+                print(f"   ⚠️  Error cleaning removed practice tests: {orphan_err}")
 
         sync_course_counts(course, save=False)
         
@@ -2159,13 +2198,17 @@ def course_update(request, course_id):
 
         serializer = CourseSerializer(course)
         raw = _fetch_course_extra_doc(course.id)
-        return Response(
-            {
-                "success": True,
-                "message": "Course updated successfully",
-                "data": _merge_course_extra_from_doc(serializer.data, raw),
-            }
-        )
+        response_payload = {
+            "success": True,
+            "message": "Course updated successfully",
+            "data": _merge_course_extra_from_doc(serializer.data, raw),
+        }
+        if practice_test_sync_warnings:
+            response_payload["sync_warnings"] = practice_test_sync_warnings
+            response_payload["message"] = (
+                "Course updated, but some practice tests could not be saved."
+            )
+        return Response(response_payload)
 
     except Course.DoesNotExist:
         return Response({"error": "Course not found"}, status=404)

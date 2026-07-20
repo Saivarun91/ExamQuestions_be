@@ -25,6 +25,9 @@ class PracticeTest(Document):
     difficulty_level = StringField(required=False, default="Medium")
     test_type = StringField(required=False, default="Practice Test")
     additional_info = StringField(required=False, default="")
+    pass_rate = IntField(default=0)
+    rating = FloatField(default=0.0)
+    reviews_count = IntField(default=0)
     
     # Meta tags for SEO
     meta_title = StringField(required=False, default="")

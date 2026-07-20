@@ -218,42 +218,92 @@ class CourseSerializer(serializers.Serializer):
         }
 
     def _serialize_practice_tests(self, instance):
-        """Convert practice_tests references to list format for API."""
+        """Convert practice_tests to list format for API.
+
+        Prefer PracticeTest documents linked by course (source of truth),
+        then merge any leftover course.practice_tests references / legacy list.
+        """
         practice_tests_list = []
-        seen_ids = set()  # Track seen practice test IDs to avoid duplicates
+        seen_ids = set()
+
+        def append_pt(pt):
+            if not pt:
+                return
+            try:
+                pt_id = str(pt.id)
+            except Exception:
+                return
+            if pt_id in seen_ids:
+                return
+            seen_ids.add(pt_id)
+            duration_value = getattr(pt, 'duration', 0) or 0
+            practice_tests_list.append({
+                'id': pt_id,
+                'slug': getattr(pt, 'slug', '') or '',
+                'name': getattr(pt, 'title', '') or '',
+                'title': getattr(pt, 'title', '') or '',
+                'description': getattr(pt, 'overview', '') or '',
+                'questions': int(getattr(pt, 'questions', 0) or 0),
+                'difficulty': getattr(pt, 'difficulty_level', None) or 'Intermediate',
+                'duration': str(duration_value),
+                'pass_rate': int(getattr(pt, 'pass_rate', 0) or 0),
+                'rating': float(getattr(pt, 'rating', 0) or 0),
+                'reviews_count': int(getattr(pt, 'reviews_count', 0) or 0),
+            })
+
         try:
-            # Get practice_tests from reference field
-            practice_tests = getattr(instance, 'practice_tests', [])
-            for pt in practice_tests:
-                if pt:  # Check if reference is not None
-                    pt_id = str(pt.id)
-                    # Skip if we've already seen this practice test
-                    if pt_id in seen_ids:
+            from practice_tests.models import PracticeTest
+            from courses.counts import (
+                _exam_question_counts_by_practice_test,
+                _practice_test_question_count,
+            )
+
+            linked = list(PracticeTest.objects(course=instance).order_by('created_at'))
+            exam_q_by_pt = _exam_question_counts_by_practice_test(
+                [pt.id for pt in linked]
+            )
+            for pt in linked:
+                append_pt(pt)
+                for row in practice_tests_list:
+                    if row.get('id') == str(pt.id):
+                        row['questions'] = _practice_test_question_count(
+                            pt, exam_q_by_pt
+                        )
+                        break
+        except Exception:
+            pass
+
+        try:
+            for pt in getattr(instance, 'practice_tests', []) or []:
+                append_pt(pt)
+        except Exception:
+            pass
+
+        if not practice_tests_list:
+            legacy = getattr(instance, 'practice_tests_list', None) or []
+            if isinstance(legacy, list):
+                for pt in legacy:
+                    if not isinstance(pt, dict):
                         continue
-                    seen_ids.add(pt_id)
+                    pt_id = str(pt.get('id') or pt.get('_id') or '')
+                    if pt_id and pt_id in seen_ids:
+                        continue
+                    if pt_id:
+                        seen_ids.add(pt_id)
                     practice_tests_list.append({
                         'id': pt_id,
-                        'slug': getattr(pt, 'slug', ''),
-                        'name': getattr(pt, 'title', ''),
-                        'title': getattr(pt, 'title', ''),
-                        'description': getattr(pt, 'overview', ''),
-                        'questions': getattr(pt, 'questions', 0),
-                        'difficulty': getattr(pt, 'difficulty_level', 'Intermediate'),
-                        'duration': str(getattr(pt, 'duration', 0)),
+                        'slug': pt.get('slug', '') or '',
+                        'name': pt.get('name') or pt.get('title') or '',
+                        'title': pt.get('title') or pt.get('name') or '',
+                        'description': pt.get('description') or pt.get('overview') or '',
+                        'questions': int(pt.get('questions') or 0),
+                        'difficulty': pt.get('difficulty') or pt.get('difficulty_level') or 'Intermediate',
+                        'duration': str(pt.get('duration') or 0),
+                        'pass_rate': int(pt.get('pass_rate') or 0),
+                        'rating': float(pt.get('rating') or 0),
+                        'reviews_count': int(pt.get('reviews_count') or 0),
                     })
-        except Exception as e:
-            # Fallback to old practice_tests_list if references fail
-            practice_tests_list = getattr(instance, 'practice_tests_list', [])
-            # Also deduplicate the fallback list
-            if practice_tests_list:
-                seen_ids = set()
-                deduplicated_list = []
-                for pt in practice_tests_list:
-                    pt_id = pt.get('id') or pt.get('_id') or str(hash(str(pt)))
-                    if pt_id not in seen_ids:
-                        seen_ids.add(pt_id)
-                        deduplicated_list.append(pt)
-                practice_tests_list = deduplicated_list
+
         return practice_tests_list
 
     def create(self, validated_data):

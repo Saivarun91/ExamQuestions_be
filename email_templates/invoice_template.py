@@ -25,6 +25,139 @@ INVOICE_BLUE = "#4a8fd4"
 INVOICE_BLUE_DARK = "#3b78b8"
 LOGO_CID = "invoice_logo"
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
+DEJAVU_REGULAR = FONTS_DIR / "DejaVuSans.ttf"
+DEJAVU_BOLD = FONTS_DIR / "DejaVuSans-Bold.ttf"
+
+# Compact layout for xhtml2pdf (production). Playwright uses DEFAULT_INVOICE_HTML.
+XHTML2PDF_INVOICE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Invoice {{invoice_number}}</title>
+  <style type="text/css">
+    @page {
+      size: A4 portrait;
+      margin: 14mm 12mm;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      font-family: Helvetica, Arial, sans-serif;
+      font-size: 12px;
+      color: #333333;
+    }
+    .wrap {
+      width: 100%;
+      background: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <table class="wrap" width="100%" cellspacing="0" cellpadding="0" border="0">
+    <tr>
+      <td align="left" style="padding:0;line-height:0;font-size:0;">
+        <img src="{{corner_tl_src}}" width="110" height="48" border="0"/>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:8px 18px 0 18px;">
+        <table width="100%" cellspacing="0" cellpadding="0" border="0">
+          <tr>
+            <td width="48%" valign="top" align="left">
+              <img src="{{logo_src}}" width="170" height="36" border="0"/>
+            </td>
+            <td width="52%" valign="top" align="right">
+              <font color="{{invoice_blue}}" size="5"><b>INVOICE</b></font><br/>
+              <font size="2" color="#333333">{{company_address}}</font>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:16px 18px 0 18px;">
+        <font size="3" color="#111111"><b>Invoice To :</b></font><br/><br/>
+        <font size="2" color="#333333">
+          <b>Issued by :</b> {{issued_by}}<br/>
+          <b>Invoice no :</b> {{invoice_number}}<br/>
+          <b>Date :</b> {{invoice_date}}<br/>
+          {{#if invoice_gstin}}<b>GSTIN :</b> {{invoice_gstin}}<br/>{{/if}}
+          <b>Transaction ID :</b> {{transaction_id}}
+        </font>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:14px 18px 0 18px;">
+        <font size="3" color="#111111"><b>Billed To :</b></font><br/><br/>
+        <font size="2" color="#333333">
+          <b>Name :</b> {{billing_name}}<br/>
+          <b>Phone :</b> {{billing_phone}}<br/>
+          <b>Email :</b> {{customer_email}}<br/>
+          <b>Address :</b> {{billing_address}}
+        </font>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:18px 18px 0 18px;">
+        <table width="100%" cellspacing="0" cellpadding="6" border="0">
+          <tr bgcolor="#f2f4f8">
+            <td width="8%" style="border-bottom:1px solid #e2e6ee;"><b>NO</b></td>
+            <td width="40%" style="border-bottom:1px solid #e2e6ee;"><b>ITEM DESRIPTION</b></td>
+            <td width="18%" style="border-bottom:1px solid #e2e6ee;"><b>PRICE</b></td>
+            <td width="16%" style="border-bottom:1px solid #e2e6ee;"><b>PLAN</b></td>
+            <td width="18%" style="border-bottom:1px solid #e2e6ee;"><b>TOTAL</b></td>
+          </tr>
+          <tr>
+            <td style="border-bottom:1px solid #e2e6ee;">1</td>
+            <td style="border-bottom:1px solid #e2e6ee;">{{exam_name}}</td>
+            <td style="border-bottom:1px solid #e2e6ee;"><img src="{{exam_price_img}}" height="13" border="0"/></td>
+            <td style="border-bottom:1px solid #e2e6ee;">{{plan_name}}</td>
+            <td style="border-bottom:1px solid #e2e6ee;"><img src="{{exam_price_img}}" height="13" border="0"/></td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:12px 18px 0 18px;" align="right">
+        <table width="280" cellspacing="0" cellpadding="6" border="0" align="right">
+          <tr>
+            <td align="left" style="border-bottom:1px solid #e2e6ee;"><b>Total :</b></td>
+            <td align="right" style="border-bottom:1px solid #e2e6ee;"><img src="{{subtotal_img}}" height="13" border="0"/></td>
+          </tr>
+          <tr>
+            <td align="left" style="border-bottom:1px solid #e2e6ee;"><b>Tax :</b></td>
+            <td align="right" style="border-bottom:1px solid #e2e6ee;"><img src="{{tax_img}}" height="13" border="0"/></td>
+          </tr>
+          <tr>
+            <td align="left" style="border-bottom:1px solid #e2e6ee;"><b>Discount :</b></td>
+            <td align="right" style="border-bottom:1px solid #e2e6ee;"><img src="{{discount_img}}" height="13" border="0"/></td>
+          </tr>
+          <tr>
+            <td align="left"><font size="3"><b>Sub Total :</b></font></td>
+            <td align="right"><img src="{{amount_paid_img}}" height="15" border="0"/></td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:16px 18px 8px 18px;">
+        <font size="3" color="#111111"><b>Notes:</b></font><br/>
+        <font size="2" color="#555555">
+          This is a system generated invoice and does not require a physical signature.<br/>
+          This invoice is issued by TutorKhoj Private Limited operating as AllExamQuestions.
+        </font>
+      </td>
+    </tr>
+    <tr>
+      <td align="right" style="padding:8px 0 0 0;line-height:0;font-size:0;">
+        <img src="{{corner_br_src}}" width="110" height="48" border="0"/>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
 
 DEFAULT_INVOICE_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -275,6 +408,87 @@ def _fetch_url_bytes(url):
         return resp.read(), resp.headers.get("Content-Type", "")
 
 
+def _text_to_png_data_uri(text, *, font_size=14, bold=False, color=(51, 51, 51)):
+    """
+    Rasterize text (incl. ₹) to a PNG data-URI.
+
+    xhtml2pdf's default fonts lack ₹ and @font-face temp files break on Windows,
+    so money amounts are embedded as images for production PDFs.
+    """
+    text = str(text if text is not None else "")
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        # Fallback: return empty 1x1 transparent png
+        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W2fQAAAAASUVORK5CYII="
+
+    font_path = DEJAVU_BOLD if bold and DEJAVU_BOLD.is_file() else DEJAVU_REGULAR
+    try:
+        if font_path.is_file():
+            font = ImageFont.truetype(str(font_path), font_size)
+        else:
+            font = ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+
+    # High-DPI render then downscale for crisp PDF output
+    scale = 2
+    try:
+        big_font = ImageFont.truetype(str(font_path), font_size * scale) if font_path.is_file() else font
+    except Exception:
+        big_font = font
+
+    bbox = big_font.getbbox(text) if hasattr(big_font, "getbbox") else (0, 0, 8 * len(text), font_size * scale)
+    left, top, right, bottom = bbox
+    pad = 4 * scale
+    width = max(1, right - left + pad)
+    height = max(1, bottom - top + pad)
+    img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    draw.text((pad // 2 - left, pad // 2 - top), text, fill=color, font=big_font)
+    if scale > 1:
+        img = img.resize((max(1, width // scale), max(1, height // scale)), Image.Resampling.LANCZOS)
+    buf = __import__("io").BytesIO()
+    img.save(buf, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def _file_to_data_uri(path, mimetype=None):
+    path = Path(path)
+    if not path.is_file():
+        return ""
+    data = path.read_bytes()
+    mt = mimetype or _guess_image_mimetype(str(path), "", data)
+    return f"data:{mt};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _ensure_invoice_corner_assets():
+    """Create corner PNGs if missing (xhtml2pdf cannot render CSS border-radius)."""
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    tl = ASSETS_DIR / "corner_tl.png"
+    br = ASSETS_DIR / "corner_br.png"
+    if tl.is_file() and br.is_file():
+        return tl, br
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return tl, br
+
+    blue = (74, 143, 212)
+    for path, kind in ((tl, "tl"), (br, "br")):
+        if path.is_file():
+            continue
+        size = 140
+        img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(img)
+        if kind == "tl":
+            draw.ellipse((-size, -size, size, size), fill=blue)
+        else:
+            draw.ellipse((0, 0, size * 2, size * 2), fill=blue)
+        img.save(path)
+    return tl, br
+
+
 def _fallback_logo_bytes():
     local_candidates = [
         ASSETS_DIR / "brand_logo.png",
@@ -285,6 +499,28 @@ def _fallback_logo_bytes():
         if path.is_file():
             data = path.read_bytes()
             return data, _guess_image_mimetype(str(path), "", data)
+
+    # Prefer a PNG logo for PDF engines that cannot render SVG.
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        logo = Image.new("RGBA", (460, 96), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(logo)
+        draw.rounded_rectangle((0, 8, 80, 88), radius=12, fill=(74, 143, 212))
+        draw.polygon([(24, 60), (36, 28), (44, 28), (32, 60)], fill=(255, 255, 255))
+        draw.rectangle([(40, 44), (56, 50)], fill=(255, 255, 255))
+        font_path = DEJAVU_BOLD if DEJAVU_BOLD.is_file() else DEJAVU_REGULAR
+        try:
+            font = ImageFont.truetype(str(font_path), 34) if font_path.is_file() else ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((100, 28), "All Exam Questions", fill=(74, 143, 212), font=font)
+        ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+        out = ASSETS_DIR / "brand_logo.png"
+        logo.save(out)
+        return out.read_bytes(), "image/png"
+    except Exception:
+        pass
 
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="230" height="48" viewBox="0 0 230 48">
@@ -447,3 +683,42 @@ def render_builtin_invoice_download(context):
     b64 = base64.b64encode(logo_att["content"]).decode("ascii")
     ctx["logo_src"] = f"data:{logo_att['mimetype']};base64,{b64}"
     return replace_template_variables(DEFAULT_INVOICE_HTML, ctx)
+
+
+def render_builtin_invoice_pdf(context):
+    """
+    Render invoice HTML optimized for xhtml2pdf (production fallback).
+
+    Avoids CSS border-radius (unsupported) and embeds DejaVu fonts so ₹ renders.
+    """
+    ctx = enrich_invoice_context(context)
+    logo_att = build_invoice_logo_attachment()
+
+    # xhtml2pdf cannot reliably render SVG — force PNG fallback when needed.
+    content = logo_att["content"]
+    mimetype = logo_att["mimetype"]
+    if "svg" in (mimetype or ""):
+        content, mimetype = _fallback_logo_bytes()
+        if "svg" in (mimetype or ""):
+            # Last resort: use generated brand PNG if available.
+            png_path = ASSETS_DIR / "brand_logo.png"
+            if png_path.is_file():
+                content = png_path.read_bytes()
+                mimetype = "image/png"
+
+    ctx["logo_src"] = f"data:{mimetype};base64,{base64.b64encode(content).decode('ascii')}"
+
+    tl, br = _ensure_invoice_corner_assets()
+    ctx["corner_tl_src"] = _file_to_data_uri(tl, "image/png")
+    ctx["corner_br_src"] = _file_to_data_uri(br, "image/png")
+
+    # Money amounts as PNG so ₹ renders without PDF font embedding.
+    ctx["exam_price_img"] = _text_to_png_data_uri(ctx.get("exam_price") or "")
+    ctx["subtotal_img"] = _text_to_png_data_uri(ctx.get("subtotal") or "")
+    ctx["tax_img"] = _text_to_png_data_uri(ctx.get("tax_display") or "-")
+    ctx["discount_img"] = _text_to_png_data_uri(ctx.get("discount_display") or "-")
+    ctx["amount_paid_img"] = _text_to_png_data_uri(
+        ctx.get("amount_paid") or "", bold=True, font_size=15, color=(17, 17, 17)
+    )
+
+    return replace_template_variables(XHTML2PDF_INVOICE_HTML, ctx)
