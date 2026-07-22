@@ -3170,3 +3170,394 @@ def get_or_create_test_attempt(request):
         }, status=500)
 
 
+@csrf_exempt
+@authenticate
+def claim_guest_test_attempt(request):
+    """
+    Persist a guest (local) completed practice attempt against the logged-in user
+    so results are saved and visible in admin.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        if not request.body:
+            return JsonResponse({"success": False, "message": "Request body is empty"}, status=400)
+
+        data = json.loads(request.body)
+        user_id = request.user.get("id") if isinstance(request.user, dict) else None
+        if not user_id or not ObjectId.is_valid(str(user_id)):
+            return JsonResponse({"success": False, "message": "User not authenticated"}, status=401)
+
+        try:
+            user_obj = User.objects.get(id=ObjectId(str(user_id)))
+        except User.DoesNotExist:
+            return JsonResponse({"success": False, "message": "User not found"}, status=404)
+
+        exam_id = data.get("exam_id")
+        test_id = data.get("test_id") or data.get("category_id")
+        user_answers = data.get("user_answers") or []
+        questions_snapshot = data.get("questions_snapshot") or []
+        score = float(data.get("score") or 0)
+        total_marks = int(data.get("total_marks") or len(user_answers) or len(questions_snapshot) or 0)
+        percentage = float(data.get("percentage") or 0)
+        time_limit = int(data.get("time_limit") or 30)
+        start_time_raw = data.get("start_time")
+
+        category, err = _resolve_practice_test(test_id, exam_id)
+        if err or not category:
+            # Fallback: try get_or_create-style resolution via course practice tests
+            if exam_id and ObjectId.is_valid(str(exam_id)) and test_id:
+                try:
+                    from courses.models import Course
+                    course = Course.objects.get(id=ObjectId(str(exam_id)))
+                    all_course_tests = list(PracticeTest.objects(course=course).order_by("created_at"))
+                    if ObjectId.is_valid(str(test_id)):
+                        category = PracticeTest.objects.get(id=ObjectId(str(test_id)))
+                    else:
+                        try:
+                            idx = int(test_id) - 1
+                            if 0 <= idx < len(all_course_tests):
+                                category = all_course_tests[idx]
+                        except (TypeError, ValueError):
+                            category = PracticeTest.objects(slug=str(test_id), course=course).first()
+                except Exception:
+                    category = None
+            if not category:
+                return JsonResponse(
+                    {"success": False, "message": err or "Practice test not found"},
+                    status=404,
+                )
+
+        exam = None
+        if exam_id and ObjectId.is_valid(str(exam_id)):
+            try:
+                exam = Exam.objects.get(id=ObjectId(str(exam_id)))
+            except Exam.DoesNotExist:
+                exam = None
+
+        start_time = datetime.utcnow()
+        if start_time_raw:
+            try:
+                start_time = datetime.fromisoformat(str(start_time_raw).replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                start_time = datetime.utcnow()
+
+        end_time = datetime.utcnow()
+        duration_taken = max(0, int((end_time - start_time).total_seconds() / 60))
+
+        # Build questions list for the attempt
+        answers_by_qid = {
+            str(a.get("question_id")): a.get("selected_answers") or []
+            for a in user_answers
+            if a.get("question_id")
+        }
+
+        attempt_questions = []
+        if questions_snapshot:
+            for q in questions_snapshot:
+                qid = str(q.get("question_id") or q.get("id") or q.get("_id") or "")
+                attempt_questions.append({
+                    "question_id": qid,
+                    "question_text": q.get("question_text") or "",
+                    "marks": q.get("marks") or 1,
+                    "user_selected_answers": answers_by_qid.get(qid, []),
+                    "is_correct": False,
+                    "marks_awarded": 0,
+                })
+        else:
+            for a in user_answers:
+                qid = str(a.get("question_id") or "")
+                attempt_questions.append({
+                    "question_id": qid,
+                    "marks": 1,
+                    "user_selected_answers": a.get("selected_answers") or [],
+                    "is_correct": False,
+                    "marks_awarded": 0,
+                })
+
+        if total_marks <= 0:
+            total_marks = max(len(attempt_questions), 1)
+        if percentage <= 0 and total_marks > 0:
+            percentage = round((score / total_marks) * 100, 2)
+
+        # Determine pass/fail server-side, same rules as submit_test:
+        # category passing_score -> exam passing_score -> 60% default.
+        passing_score = getattr(category, "passing_score", None)
+        if passing_score is None and exam:
+            passing_score = getattr(exam, "passing_score", None)
+        try:
+            passing_score = float(passing_score)
+            if passing_score <= 0 or passing_score > 100:
+                passing_score = 60.0
+        except (TypeError, ValueError):
+            passing_score = 60.0
+        passed = percentage >= passing_score
+
+        attempt = TestAttempt.objects.create(
+            user=user_obj,
+            exam=exam,
+            category=category,
+            questions=attempt_questions,
+            user_answers=user_answers,
+            score=score,
+            total_marks=total_marks,
+            percentage=percentage,
+            passed=passed,
+            start_time=start_time,
+            end_time=end_time,
+            duration_taken=duration_taken,
+            time_limit=time_limit,
+            is_time_up=False,
+            is_completed=True,
+            is_trial=True,
+        )
+
+        return JsonResponse({
+            "success": True,
+            "attempt_id": str(attempt.id),
+            "score": attempt.score,
+            "total_marks": attempt.total_marks,
+            "percentage": attempt.percentage,
+            "passed": attempt.passed,
+        }, status=200)
+    except json.JSONDecodeError as e:
+        return JsonResponse({"success": False, "message": f"Invalid JSON: {str(e)}"}, status=400)
+    except Exception as e:
+        import traceback
+        print(f"[claim_guest_test_attempt] error: {e}")
+        print(traceback.format_exc())
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+def _iso_utc(dt):
+    """Serialize a (naive-UTC) datetime with an explicit UTC offset so browsers
+    convert it to the viewer's local time instead of misreading it as local."""
+    if not dt:
+        return None
+    try:
+        iso = dt.isoformat()
+        # Model datetimes are stored as naive UTC; add the offset if missing.
+        if dt.tzinfo is None:
+            iso += "+00:00"
+        return iso
+    except Exception:
+        return None
+
+
+@csrf_exempt
+@authenticate
+@restrict(["admin"])
+def list_test_attempts(request):
+    """
+    Admin: list users who took practice tests (completed attempts) with user details.
+    Optional query params: exam_id, test_id/category_id, search, page, page_size.
+    Response includes an `exams` summary (attempt + unique member counts per exam)
+    for building filters.
+    """
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        exam_id = (request.GET.get("exam_id") or "").strip()
+        test_id = (request.GET.get("test_id") or request.GET.get("category_id") or "").strip()
+        search = (request.GET.get("search") or "").strip().lower()
+        try:
+            page = max(1, int(request.GET.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.GET.get("page_size") or 50)))
+        except (TypeError, ValueError):
+            page_size = 50
+
+        query = {"is_completed": True}
+        if test_id:
+            category, _err = _resolve_practice_test(test_id, exam_id or None)
+            if category:
+                query["category"] = category.id
+
+        # Exam filtering happens on the built rows (below) because the exam is
+        # usually linked through category.course, not the attempt.exam field.
+        # Heavy per-question payloads are excluded and every reference is
+        # batch-fetched once (instead of N+1 dereference queries per attempt).
+        def _ref_id(value):
+            if value is None:
+                return None
+            ref = getattr(value, "id", value)  # DBRef -> ObjectId
+            return ref if isinstance(ref, ObjectId) else None
+
+        attempts_raw = [
+            a.to_mongo().to_dict()
+            for a in TestAttempt.objects(**query)
+            .no_dereference()
+            .exclude("questions", "user_answers")
+            .order_by("-end_time", "-created_at")
+        ]
+
+        user_ids = {_ref_id(r.get("user")) for r in attempts_raw} - {None}
+        category_ids = {_ref_id(r.get("category")) for r in attempts_raw} - {None}
+
+        users_map = {}
+        if user_ids:
+            for u in User.objects(id__in=list(user_ids)).only("fullname", "email"):
+                users_map[str(u.id)] = {
+                    "name": getattr(u, "fullname", None) or u.email or "Unknown",
+                    "email": u.email or "",
+                }
+
+        categories_map = {}
+        course_ids = set()
+        if category_ids:
+            for c in (
+                PracticeTest.objects(id__in=list(category_ids))
+                .no_dereference()
+                .only("title", "course")
+            ):
+                raw_c = c.to_mongo().to_dict()
+                course_oid = _ref_id(raw_c.get("course"))
+                if course_oid:
+                    course_ids.add(course_oid)
+                categories_map[str(raw_c.get("_id"))] = {
+                    "title": raw_c.get("title") or "",
+                    "course_id": str(course_oid) if course_oid else "",
+                }
+
+        courses_map = {}
+        if course_ids:
+            from courses.models import Course
+            for co in Course.objects(id__in=list(course_ids)).only("title", "code"):
+                courses_map[str(co.id)] = {
+                    "title": getattr(co, "title", None) or getattr(co, "name", None) or "",
+                    "code": getattr(co, "code", None) or "",
+                }
+
+        rows = []
+        for raw in attempts_raw:
+            uid = _ref_id(raw.get("user"))
+            user_info = users_map.get(str(uid)) if uid else None
+            user_id_str = str(uid) if uid else ""
+            user_name = user_info["name"] if user_info else "Unknown"
+            user_email = user_info["email"] if user_info else ""
+
+            if search:
+                hay = f"{user_name} {user_email}".lower()
+                if search not in hay:
+                    continue
+
+            cat_oid = _ref_id(raw.get("category"))
+            cat_info = categories_map.get(str(cat_oid)) if cat_oid else None
+            test_name = cat_info["title"] if cat_info else ""
+            test_id_out = str(cat_oid) if cat_oid else ""
+            course_id = cat_info["course_id"] if cat_info else ""
+            course_info = courses_map.get(course_id) if course_id else None
+            exam_title = course_info["title"] if course_info else ""
+            exam_code = course_info["code"] if course_info else ""
+
+            exam_oid = _ref_id(raw.get("exam"))
+
+            rows.append({
+                "id": str(raw.get("_id")),
+                "user_id": user_id_str,
+                "user_name": user_name,
+                "user_email": user_email,
+                "exam_id": course_id or (str(exam_oid) if exam_oid else ""),
+                "exam_title": exam_title,
+                "exam_code": exam_code,
+                "test_id": test_id_out,
+                "test_name": test_name,
+                "score": raw.get("score") or 0,
+                "total_marks": raw.get("total_marks") or 0,
+                "percentage": round(float(raw.get("percentage") or 0), 2),
+                "passed": bool(raw.get("passed")),
+                "is_trial": bool(raw.get("is_trial")),
+                "duration_taken": raw.get("duration_taken"),
+                "started_at": _iso_utc(raw.get("start_time")),
+                "completed_at": _iso_utc(raw.get("end_time")),
+                "created_at": _iso_utc(raw.get("created_at")),
+            })
+
+        # Per-exam summary (attempt counts + unique members) computed before the
+        # exam filter so the filter dropdown always shows every exam.
+        exam_summary = {}
+        for row in rows:
+            key = row["exam_id"] or "unknown"
+            if key not in exam_summary:
+                exam_summary[key] = {
+                    "exam_id": row["exam_id"],
+                    "exam_title": row["exam_title"] or "Unknown Exam",
+                    "exam_code": row["exam_code"],
+                    "attempts": 0,
+                    "members": set(),
+                }
+            exam_summary[key]["attempts"] += 1
+            member_key = row["user_id"] or row["user_email"] or row["user_name"]
+            if member_key:
+                exam_summary[key]["members"].add(member_key)
+
+        exams_out = sorted(
+            (
+                {
+                    "exam_id": v["exam_id"],
+                    "exam_title": v["exam_title"],
+                    "exam_code": v["exam_code"],
+                    "attempts": v["attempts"],
+                    "members": len(v["members"]),
+                }
+                for v in exam_summary.values()
+            ),
+            key=lambda x: (-x["attempts"], x["exam_title"].lower()),
+        )
+
+        if exam_id:
+            rows = [r for r in rows if r["exam_id"] == exam_id]
+
+        total = len(rows)
+        unique_members = len({
+            (r["user_id"] or r["user_email"] or r["user_name"]) for r in rows
+        }) if rows else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_rows = rows[start:end]
+
+        return JsonResponse({
+            "success": True,
+            "data": page_rows,
+            "total": total,
+            "unique_members": unique_members,
+            "page": page,
+            "page_size": page_size,
+            "exams": exams_out,
+        }, status=200)
+    except Exception as e:
+        import traceback
+        print(f"[list_test_attempts] error: {e}")
+        print(traceback.format_exc())
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(["admin"])
+def delete_test_attempt(request, attempt_id):
+    """Admin: delete a test attempt record."""
+    if request.method != "DELETE":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        if not ObjectId.is_valid(attempt_id):
+            return JsonResponse({"success": False, "message": "Invalid attempt ID"}, status=400)
+
+        try:
+            attempt = TestAttempt.objects.get(_id=ObjectId(attempt_id))
+        except TestAttempt.DoesNotExist:
+            return JsonResponse({"success": False, "message": "Attempt not found"}, status=404)
+
+        attempt.delete()
+        return JsonResponse({"success": True, "message": "Attempt deleted"}, status=200)
+    except Exception as e:
+        import traceback
+        print(f"[delete_test_attempt] error: {e}")
+        print(traceback.format_exc())
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+

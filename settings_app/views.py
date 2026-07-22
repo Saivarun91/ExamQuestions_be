@@ -3,7 +3,72 @@ from datetime import datetime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from common.middleware import authenticate, restrict
-from .models import AdminSettings, PrivacyPolicy, TermsOfService, RefundCancellationPolicy, Disclaimer, ContactUs, EditorPolicy, Sitemap, SitemapURL
+from .models import (
+    AdminSettings,
+    PrivacyPolicy,
+    TermsOfService,
+    RefundCancellationPolicy,
+    Disclaimer,
+    ContactUs,
+    EditorPolicy,
+    FooterSettings,
+    Sitemap,
+    SitemapURL,
+)
+
+DEFAULT_FOOTER_SETTINGS = {
+    "providers_title": "Exam Providers Covered",
+    "resources_title": "Resources",
+    "legal_title": "Legal",
+    "contact_title": "Contact Us",
+    "blogs_label": "Blogs",
+    "faq_label": "FAQ",
+    "privacy_policy_label": "Privacy Policy",
+    "terms_label": "Terms & Conditions",
+    "refund_policy_label": "Refund & Cancellation Policy",
+    "disclaimer_link_label": "Disclaimer",
+    "editor_policy_label": "Editor Policy",
+    "contact_us_label": "Contact Us",
+    "copyright": "© 2025 AllExamQuestions. All rights reserved.",
+    "brand_line": "A Brand of TutorKhoj Private Limited",
+    "disclaimer_label": "Disclaimer:",
+    "disclaimer_text": (
+        "All trademarks, certification names, course titles, and logos displayed on this website "
+        "are the property of their respective owners and are used solely for identification and "
+        "informational purposes. AllExamQuestions is an independent exam preparation platform and "
+        "is not affiliated with, endorsed by, authorized by, or sponsored by any exam provider, "
+        "certification body, or brand mentioned on this website. Any brand names, product names, "
+        "or service names are used only to describe the corresponding exams or content. Some "
+        "graphics used on this website are sourced from royalty-free or publicly available "
+        "resources and are believed to be free for commercial use."
+    ),
+    "ssl_secure": "SSL Secure",
+    "no_providers": "No providers available",
+    "loading": "Loading...",
+    "providers_limit": 5,
+    "show_social_links": True,
+    "show_disclaimer": True,
+}
+
+
+def _footer_settings_payload(footer_obj=None):
+    data = dict(DEFAULT_FOOTER_SETTINGS)
+    if footer_obj:
+        for key in DEFAULT_FOOTER_SETTINGS.keys():
+            value = getattr(footer_obj, key, None)
+            if value is None:
+                continue
+            if isinstance(DEFAULT_FOOTER_SETTINGS[key], bool):
+                data[key] = bool(value)
+            elif isinstance(DEFAULT_FOOTER_SETTINGS[key], int):
+                try:
+                    data[key] = int(value)
+                except (TypeError, ValueError):
+                    data[key] = DEFAULT_FOOTER_SETTINGS[key]
+            else:
+                text = str(value).strip() if value is not None else ""
+                data[key] = text if text else DEFAULT_FOOTER_SETTINGS[key]
+    return data
 
 def _public_settings_payload(settings_obj, contact_obj=None):
     contact_email = ""
@@ -477,6 +542,76 @@ def update_contact_us(request):
         contact.save()
         
         return JsonResponse({"success": True, "message": "Contact us details updated successfully"}, status=200)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+# ================= FOOTER SETTINGS =================
+@csrf_exempt
+def get_footer_settings(request):
+    """Get footer settings (public endpoint)."""
+    try:
+        footer = FooterSettings.objects.first()
+        if not footer:
+            footer = FooterSettings(**DEFAULT_FOOTER_SETTINGS)
+            footer.save()
+
+        return JsonResponse(
+            {
+                "success": True,
+                "data": _footer_settings_payload(footer),
+                "updated_at": footer.updated_at.isoformat() if footer.updated_at else None,
+            },
+            status=200,
+        )
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+@authenticate
+@restrict(['admin'])
+def update_footer_settings(request):
+    """Update footer settings (admin only)."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "Method not allowed"}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+        footer = FooterSettings.objects.first()
+        if not footer:
+            footer = FooterSettings(**DEFAULT_FOOTER_SETTINGS)
+
+        for key, default_value in DEFAULT_FOOTER_SETTINGS.items():
+            if key not in body:
+                continue
+
+            value = body.get(key)
+            if isinstance(default_value, bool):
+                setattr(footer, key, bool(value))
+            elif isinstance(default_value, int):
+                try:
+                    numeric = int(value)
+                except (TypeError, ValueError):
+                    numeric = default_value
+                if key == "providers_limit":
+                    numeric = max(1, min(20, numeric))
+                setattr(footer, key, numeric)
+            else:
+                text = "" if value is None else str(value).strip()
+                setattr(footer, key, text if text else default_value)
+
+        footer.updated_at = datetime.utcnow()
+        footer.save()
+
+        return JsonResponse(
+            {
+                "success": True,
+                "message": "Footer settings updated successfully",
+                "data": _footer_settings_payload(footer),
+            },
+            status=200,
+        )
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 

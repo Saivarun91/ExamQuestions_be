@@ -1026,8 +1026,11 @@ def google_oauth(request):
                 phone_number="N/A",
                 role="student"
             )
-            # ✅ Instead of setting random password
-            user.set_unusable_password()
+            # Random unguessable password — Google users never log in with it,
+            # but the MongoEngine User model requires a hashed password.
+            user.set_password(
+                "".join(random.choices(string.ascii_letters + string.digits, k=32))
+            )
             user.save()
 
             token = generate_jwt({"id": str(user.id), "role": user.role})

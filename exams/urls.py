@@ -20,6 +20,9 @@ from exams.views import (
     get_test_rankings,
     get_topic_wise_analysis,
     get_or_create_test_attempt,
+    claim_guest_test_attempt,
+    list_test_attempts,
+    delete_test_attempt,
 )
 
 urlpatterns = [
@@ -46,6 +49,9 @@ urlpatterns = [
   path('start/', start_test, name='start-test'),
   # IMPORTANT: More specific patterns must come BEFORE parameterized patterns
   path('attempt/get-or-create/', get_or_create_test_attempt, name='get-or-create-test-attempt'),
+  path('attempt/claim-guest/', claim_guest_test_attempt, name='claim-guest-test-attempt'),
+  path('attempts/', list_test_attempts, name='list-test-attempts'),
+  path('attempts/<str:attempt_id>/delete/', delete_test_attempt, name='delete-test-attempt'),
   path("attempt/<str:attempt_id>/questions/", get_attempt_questions, name="get_attempt_questions"),
   path('attempt/<str:attempt_id>/submit/', submit_test, name='submit-test'),
   path("results/<str:attempt_id>/", get_test_result, name="get_test_result"),

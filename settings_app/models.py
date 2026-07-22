@@ -113,6 +113,53 @@ class EditorPolicy(Document):
     meta = {'collection': 'editor_policy'}
 
 
+class FooterSettings(Document):
+    """Editable site footer content managed from the admin panel."""
+    providers_title = StringField(default="Exam Providers Covered")
+    resources_title = StringField(default="Resources")
+    legal_title = StringField(default="Legal")
+    contact_title = StringField(default="Contact Us")
+
+    blogs_label = StringField(default="Blogs")
+    faq_label = StringField(default="FAQ")
+    privacy_policy_label = StringField(default="Privacy Policy")
+    terms_label = StringField(default="Terms & Conditions")
+    refund_policy_label = StringField(default="Refund & Cancellation Policy")
+    disclaimer_link_label = StringField(default="Disclaimer")
+    editor_policy_label = StringField(default="Editor Policy")
+    contact_us_label = StringField(default="Contact Us")
+
+    copyright = StringField(default="© 2025 AllExamQuestions. All rights reserved.")
+    brand_line = StringField(default="A Brand of TutorKhoj Private Limited")
+    disclaimer_label = StringField(default="Disclaimer:")
+    disclaimer_text = StringField(
+        default=(
+            "All trademarks, certification names, course titles, and logos displayed on this website "
+            "are the property of their respective owners and are used solely for identification and "
+            "informational purposes. AllExamQuestions is an independent exam preparation platform and "
+            "is not affiliated with, endorsed by, authorized by, or sponsored by any exam provider, "
+            "certification body, or brand mentioned on this website. Any brand names, product names, "
+            "or service names are used only to describe the corresponding exams or content. Some "
+            "graphics used on this website are sourced from royalty-free or publicly available "
+            "resources and are believed to be free for commercial use."
+        )
+    )
+    ssl_secure = StringField(default="SSL Secure")
+    no_providers = StringField(default="No providers available")
+    loading = StringField(default="Loading...")
+
+    providers_limit = IntField(default=5)
+    show_social_links = BooleanField(default=True)
+    show_disclaimer = BooleanField(default=True)
+
+    updated_at = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        'collection': 'footer_settings',
+        'strict': False,
+    }
+
+
 class SitemapURL(EmbeddedDocument):
     url = StringField(required=True)
     priority = FloatField(default=0.5, min_value=0.0, max_value=1.0)
