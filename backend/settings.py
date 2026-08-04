@@ -45,7 +45,7 @@ INSTALLED_APPS = [
     'exams',
     'users',
     'leads',
-    'common',
+    'common.apps.CommonConfig',
     'email_templates',
     'enrollments',
     'home',

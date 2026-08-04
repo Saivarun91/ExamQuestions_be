@@ -9,7 +9,7 @@ import datetime
 import re
 
 from bson import ObjectId
-from mongoengine.errors import NotUniqueError
+from mongoengine.errors import MultipleObjectsReturned, NotUniqueError
 from common.middleware import authenticate, restrict
 from common.duplicate_validation import duplicate_conflict, not_unique_conflict
 from common.pagination import (
@@ -886,6 +886,101 @@ def _single_or_none(queryset):
     return matches[0] if len(matches) == 1 else None
 
 
+def _course_public_lookup_score(course):
+    """Prefer practice-hub / exam-details records when duplicate slugs exist."""
+    if not course:
+        return -1
+
+    score = 0
+    if getattr(course, "is_active", True):
+        score += 1000
+    if not _is_official_details_only_course(course):
+        score += 500
+    if _course_has_practice_hub_content(course):
+        score += 200
+    if _course_has_exam_details(course):
+        score += 100
+    if not _parse_bool(getattr(course, "show_in_official_details", False), default=False):
+        score += 50
+
+    updated = getattr(course, "updated_at", None) or getattr(course, "created_at", None)
+    if updated is not None:
+        try:
+            score += int(updated.timestamp()) % 10_000
+        except Exception:
+            pass
+    return score
+
+
+def _pick_best_course(courses):
+    """Choose the best public course from a duplicate-slug set."""
+    matches = [c for c in (courses or []) if c is not None]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    return max(matches, key=_course_public_lookup_score)
+
+
+def _get_course_by_field(field_name, value, iexact=False):
+    """
+    Safe Course.objects.get replacement for public slug lookups.
+    Duplicate slugs (practice + official siblings) must not 500 the detail API.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+
+    lookup = {f"{field_name}__iexact" if iexact else field_name: value}
+    try:
+        return Course.objects.get(**lookup)
+    except Course.DoesNotExist:
+        return None
+    except MultipleObjectsReturned:
+        return _pick_best_course(list(Course.objects(**lookup)))
+
+
+def _build_partial_search_query(search):
+    """
+    Tokenized partial search: every token must match at least one exam field.
+    Supports queries like 'cyber fund' → Cybersecurity Fundamentals.
+    """
+    tokens = [t for t in re.split(r"\s+", str(search or "").strip()) if t]
+    if not tokens:
+        return None
+
+    from providers.models import Provider
+
+    and_clauses = []
+    for token in tokens:
+        regex = {"$regex": re.escape(token), "$options": "i"}
+        search_or = [
+            {"title": regex},
+            {"exam_name": regex},
+            {"code": regex},
+            {"slug": regex},
+        ]
+        matching_providers = list(
+            Provider._get_collection().find(
+                {
+                    "is_active": True,
+                    "$or": [
+                        {"name": regex},
+                        {"slug": regex},
+                    ],
+                },
+                {"_id": 1},
+            )
+        )
+        provider_ids = [doc["_id"] for doc in matching_providers]
+        if provider_ids:
+            search_or.append({"provider": {"$in": provider_ids}})
+        and_clauses.append({"$or": search_or})
+
+    if len(and_clauses) == 1:
+        return and_clauses[0]
+    return {"$and": and_clauses}
+
+
 def _limited_list(queryset, limit=25):
     """Bound broad legacy fallback scans so one request cannot walk the collection."""
     return list(queryset[:limit])
@@ -1269,29 +1364,18 @@ def course_list(request):
                 except (TypeError, ValueError):
                     pass
             if search:
-                regex = {"$regex": re.escape(search), "$options": "i"}
-                search_or = [
-                    {"title": regex},
-                    {"exam_name": regex},
-                    {"code": regex},
-                    {"slug": regex},
-                ]
-                matching_providers = list(
-                    Provider._get_collection().find(
-                        {
-                            "is_active": True,
-                            "$or": [
-                                {"name": regex},
-                                {"slug": regex},
-                            ],
-                        },
-                        {"_id": 1},
-                    )
-                )
-                provider_ids = [doc["_id"] for doc in matching_providers]
-                if provider_ids:
-                    search_or.append({"provider": {"$in": provider_ids}})
-                query["$or"] = search_or
+                partial = _build_partial_search_query(search)
+                if partial:
+                    # Merge with any pre-existing filters without clobbering provider/category.
+                    if "$and" in query:
+                        query["$and"].append(partial)
+                    elif "$or" in query:
+                        query = {
+                            **{k: v for k, v in query.items() if k != "$or"},
+                            "$and": [{"$or": query["$or"]}, partial],
+                        }
+                    else:
+                        query.update(partial)
             if wants_pagination:
                 page = _positive_int_param(request, "page", 1)
                 page_size = _positive_int_param(
@@ -1519,35 +1603,28 @@ def course_detail(request, course_identifier):
         if ObjectId.is_valid(course_identifier):
             course = Course.objects.get(id=ObjectId(course_identifier))
         else:
-            try:
-                course = Course.objects.get(slug=course_identifier)
-            except Course.DoesNotExist:
-                try:
-                    course = Course.objects.get(slug__iexact=course_identifier)
-                except Course.DoesNotExist:
-                    try:
-                        # Official details public URL can be independent from exam slug.
-                        course = Course.objects.get(
-                            official_details_url_slug=course_identifier
-                        )
-                    except Course.DoesNotExist:
-                        try:
-                            course = Course.objects.get(
-                                official_details_url_slug__iexact=course_identifier
-                            )
-                        except Course.DoesNotExist:
-                            course = None
+            # Prefer exact slug; never 500 when duplicate practice/official rows share a slug.
+            course = (
+                _get_course_by_field("slug", course_identifier)
+                or _get_course_by_field("slug", course_identifier, iexact=True)
+                or _get_course_by_field(
+                    "official_details_url_slug", course_identifier
+                )
+                or _get_course_by_field(
+                    "official_details_url_slug", course_identifier, iexact=True
+                )
+            )
 
         if course is None:
             # Legacy SEO lookup (normalized lowercase slug + provider/code probing)
             course_identifier = course_identifier.lower().replace('_', '-')
 
-            try:
-                course = Course.objects.get(slug=course_identifier)
-            except Course.DoesNotExist:
-                try:
-                    course = Course.objects.get(slug__iexact=course_identifier)
-                except Course.DoesNotExist:
+            course = (
+                _get_course_by_field("slug", course_identifier)
+                or _get_course_by_field("slug", course_identifier, iexact=True)
+            )
+
+            if course is None:
                     normalized_identifier = course_identifier.replace('_', '-')
 
                     if '-' in normalized_identifier:
@@ -1690,6 +1767,17 @@ def course_detail(request, course_identifier):
                                     break
                                 except Course.DoesNotExist:
                                     continue
+                                except MultipleObjectsReturned:
+                                    course = _pick_best_course(
+                                        list(
+                                            Course.objects(
+                                                provider=provider,
+                                                code__iexact=code_variant,
+                                            )
+                                        )
+                                    )
+                                    if course:
+                                        break
                             
                             # If not found by code, try by slug variations
                             if not course:
@@ -1740,6 +1828,17 @@ def course_detail(request, course_identifier):
                                             break
                                         except Course.DoesNotExist:
                                             continue
+                                    except MultipleObjectsReturned:
+                                        course = _pick_best_course(
+                                            list(
+                                                Course.objects(
+                                                    provider=provider,
+                                                    slug__iexact=slug_variant,
+                                                )
+                                            )
+                                        )
+                                        if course:
+                                            break
                             
                             # Last resort: try to find any course with this provider and matching slug pattern
                             if not course:
@@ -1756,23 +1855,22 @@ def course_detail(request, course_identifier):
                     
                     # Final fallback: Try to find by slug pattern (case-insensitive, partial match)
                     if not course:
-                        try:
-                            # Try exact slug match (case-insensitive)
-                            course = Course.objects.get(slug__iexact=course_identifier)
-                        except Course.DoesNotExist:
+                        course = (
+                            _get_course_by_field("slug", course_identifier, iexact=True)
+                            or _get_course_by_field(
+                                "slug", normalized_identifier, iexact=True
+                            )
+                        )
+                        if not course:
                             try:
-                                # Try normalized slug match
-                                course = Course.objects.get(slug__iexact=normalized_identifier)
-                            except Course.DoesNotExist:
-                                try:
-                                    # Try slug containing the identifier
-                                    course = _single_or_none(
-                                        Course.objects.filter(
-                                            slug__icontains=course_identifier.lower()
-                                        )
+                                # Only accept a unique partial slug match — never guess among many.
+                                course = _single_or_none(
+                                    Course.objects.filter(
+                                        slug__icontains=course_identifier.lower()
                                     )
-                                except Exception:
-                                    pass
+                                )
+                            except Exception:
+                                pass
                     
                     # Ultimate fallback: Search all courses by code pattern
                     if not course and '-' in normalized_identifier:
