@@ -48,6 +48,8 @@ DEFAULT_FOOTER_SETTINGS = {
     "providers_limit": 5,
     "show_social_links": True,
     "show_disclaimer": True,
+    # Stored dynamically on FooterSettings (meta.strict=False) — no models.py change needed
+    "logo_url": "",
 }
 
 
@@ -65,6 +67,9 @@ def _footer_settings_payload(footer_obj=None):
                     data[key] = int(value)
                 except (TypeError, ValueError):
                     data[key] = DEFAULT_FOOTER_SETTINGS[key]
+            elif key == "logo_url":
+                # Allow empty so admin can clear footer logo (falls back to site logo)
+                data[key] = str(value).strip() if value is not None else ""
             else:
                 text = str(value).strip() if value is not None else ""
                 data[key] = text if text else DEFAULT_FOOTER_SETTINGS[key]
@@ -111,16 +116,25 @@ def _public_settings_payload(settings_obj, contact_obj=None):
 def get_public_settings(request):
     """Get public site settings (site name only, no authentication required)."""
     try:
+        from common.public_cache import cache_get, cache_set, public_json_response
+
+        cached = cache_get("settings:public")
+        if cached is not None:
+            response = JsonResponse(cached, status=200)
+            response["Cache-Control"] = "public, max-age=45, stale-while-revalidate=300"
+            return response
+
         settings_obj = AdminSettings.objects.first()
         if not settings_obj:
             settings_obj = AdminSettings()
             settings_obj.save()
 
         contact_obj = ContactUs.objects.first()
-        return JsonResponse(
-            _public_settings_payload(settings_obj, contact_obj),
-            status=200,
-        )
+        payload = _public_settings_payload(settings_obj, contact_obj)
+        cache_set("settings:public", payload)
+        response = JsonResponse(payload, status=200)
+        response["Cache-Control"] = "public, max-age=45, stale-while-revalidate=300"
+        return response
     except Exception as e:
         import traceback
 
@@ -180,15 +194,20 @@ def update_admin_settings(request):
         if not settings_obj:
             settings_obj = AdminSettings()
 
-        # Update fields if provided
-        settings_obj.site_name = body.get("site_name", settings_obj.site_name)
-        settings_obj.admin_email = body.get("admin_email", settings_obj.admin_email)
+        if "site_name" in body:
+            settings_obj.site_name = body.get("site_name", settings_obj.site_name)
+        if "admin_email" in body:
+            settings_obj.admin_email = body.get("admin_email", settings_obj.admin_email)
         if "logo_url" in body:
             settings_obj.logo_url = body.get("logo_url", "")
-        settings_obj.email_notifications = body.get("email_notifications", settings_obj.email_notifications)
-        settings_obj.maintenance_mode = body.get("maintenance_mode", settings_obj.maintenance_mode)
-        settings_obj.default_user_role = body.get("default_user_role", settings_obj.default_user_role)
-        settings_obj.session_timeout = body.get("session_timeout", settings_obj.session_timeout)
+        if "email_notifications" in body:
+            settings_obj.email_notifications = body.get("email_notifications", settings_obj.email_notifications)
+        if "maintenance_mode" in body:
+            settings_obj.maintenance_mode = body.get("maintenance_mode", settings_obj.maintenance_mode)
+        if "default_user_role" in body:
+            settings_obj.default_user_role = body.get("default_user_role", settings_obj.default_user_role)
+        if "session_timeout" in body:
+            settings_obj.session_timeout = body.get("session_timeout", settings_obj.session_timeout)
         
         # Update contact details if provided
         if "contact_email" in body:
@@ -243,6 +262,9 @@ def update_admin_settings(request):
                 settings_obj.font_size = "16"
         
         settings_obj.save()
+        from common.public_cache import cache_delete_prefix, invalidate_public_http_paths
+        cache_delete_prefix("settings:")
+        invalidate_public_http_paths("/api/settings")
 
         return JsonResponse({"success": True, "message": "Settings updated successfully"}, status=200)
     except Exception as e:
@@ -551,19 +573,28 @@ def update_contact_us(request):
 def get_footer_settings(request):
     """Get footer settings (public endpoint)."""
     try:
+        from common.public_cache import cache_get, cache_set
+
+        cached = cache_get("settings:footer")
+        if cached is not None:
+            response = JsonResponse(cached, status=200)
+            response["Cache-Control"] = "public, max-age=45, stale-while-revalidate=300"
+            return response
+
         footer = FooterSettings.objects.first()
         if not footer:
             footer = FooterSettings(**DEFAULT_FOOTER_SETTINGS)
             footer.save()
 
-        return JsonResponse(
-            {
-                "success": True,
-                "data": _footer_settings_payload(footer),
-                "updated_at": footer.updated_at.isoformat() if footer.updated_at else None,
-            },
-            status=200,
-        )
+        payload = {
+            "success": True,
+            "data": _footer_settings_payload(footer),
+            "updated_at": footer.updated_at.isoformat() if footer.updated_at else None,
+        }
+        cache_set("settings:footer", payload)
+        response = JsonResponse(payload, status=200)
+        response["Cache-Control"] = "public, max-age=45, stale-while-revalidate=300"
+        return response
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 
@@ -597,12 +628,18 @@ def update_footer_settings(request):
                 if key == "providers_limit":
                     numeric = max(1, min(20, numeric))
                 setattr(footer, key, numeric)
+            elif key == "logo_url":
+                # Persist empty string when cleared; do not coerce to a non-empty default
+                setattr(footer, key, "" if value is None else str(value).strip())
             else:
                 text = "" if value is None else str(value).strip()
                 setattr(footer, key, text if text else default_value)
 
         footer.updated_at = datetime.utcnow()
         footer.save()
+        from common.public_cache import cache_delete_prefix, invalidate_public_http_paths
+        cache_delete_prefix("settings:")
+        invalidate_public_http_paths("/api/settings")
 
         return JsonResponse(
             {

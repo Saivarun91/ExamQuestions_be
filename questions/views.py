@@ -230,120 +230,81 @@ def get_test_questions(request, course_id, test_id):
         if not ObjectId.is_valid(course_id):
             return Response({"error": "Invalid course ID"}, status=status.HTTP_400_BAD_REQUEST)
 
-        course = Course.objects.get(id=ObjectId(course_id))
+        course_oid = ObjectId(course_id)
+        course = None
 
-        # Get test details from practice_tests references
+        def _load_course():
+            nonlocal course
+            if course is None:
+                course = Course.objects.get(id=course_oid)
+            return course
+
         from practice_tests.models import PracticeTest
         current_test = None
-        print(
-            f"[get_test_questions] Looking for test_id: {test_id}, course_id: {course_id}")
-
         try:
-            # Try to find by slug first (SEO-friendly)
             current_test = PracticeTest.objects(
-                slug=test_id, course=course).first()
-            if current_test:
-                print(
-                    f"[get_test_questions] Found test by slug: {current_test.title}")
-            else:
-                # Try to find by slug without ObjectId hash (e.g., "test-name" matches "test-name-694e3de3")
-                import re
-                # Match slug that starts with test_id and optionally has hash suffix
+                slug=test_id, course=course_oid).first()
+            if not current_test:
                 slug_pattern = re.compile(
                     f"^{re.escape(test_id)}(-[a-f0-9]{{8}})?$", re.IGNORECASE)
                 current_test = PracticeTest.objects(
-                    course=course).filter(slug=slug_pattern).first()
-                if current_test:
-                    print(
-                        f"[get_test_questions] Found test by slug pattern (without hash): {current_test.title}")
+                    course=course_oid).filter(slug=slug_pattern).first()
             if not current_test:
-                # Try by ObjectId
                 if ObjectId.is_valid(test_id):
-                    print(
-                        f"[get_test_questions] test_id is valid ObjectId, searching...")
                     try:
                         current_test = PracticeTest.objects.get(
-                            id=ObjectId(test_id), course=course)
-                        print(
-                            f"[get_test_questions] Found test by ObjectId: {current_test.title}")
+                            id=ObjectId(test_id), course=course_oid)
                     except PracticeTest.DoesNotExist:
-                        # Try without course filter in case course reference is wrong
                         try:
                             current_test = PracticeTest.objects.get(
                                 id=ObjectId(test_id))
-                            print(
-                                f"[get_test_questions] Found test by ObjectId (without course filter): {current_test.title}")
-                            # Verify it belongs to the course
-                            if str(current_test.course.id) != str(course.id):
-                                print(
-                                    f"[get_test_questions] Warning: Test belongs to different course")
+                            test_course_id = getattr(
+                                getattr(current_test, "course", None), "id", None
+                            )
+                            if str(test_course_id) != str(course_oid):
                                 current_test = None
                         except PracticeTest.DoesNotExist:
-                            print(
-                                f"[get_test_questions] Test with ObjectId {test_id} not found")
                             current_test = None
                 else:
-                    # Try by index (1-based) for backward compatibility
                     try:
-                        print(
-                            f"[get_test_questions] test_id is not ObjectId or slug, trying as index...")
                         test_index = int(test_id) - 1
                         practice_tests = list(
-                            course.practice_tests) if course.practice_tests else []
-                        print(
-                            f"[get_test_questions] Course has {len(practice_tests)} practice tests in reference list")
-
+                            _load_course().practice_tests
+                        ) if _load_course().practice_tests else []
                         if test_index >= 0 and test_index < len(practice_tests):
                             current_test = practice_tests[test_index]
-                            print(
-                                f"[get_test_questions] Found test by index from reference list: {current_test.title}")
                         else:
-                            # Fallback: query directly from database
                             all_tests = list(PracticeTest.objects(
-                                course=course).order_by('created_at'))
-                            print(
-                                f"[get_test_questions] Found {len(all_tests)} tests in database for course")
+                                course=course_oid).order_by('created_at'))
                             if test_index >= 0 and test_index < len(all_tests):
                                 current_test = all_tests[test_index]
-                                print(
-                                    f"[get_test_questions] Found test by index from database: {current_test.title}")
                     except (ValueError, TypeError):
-                        print(
-                            f"[get_test_questions] test_id is not a valid index, slug, or ObjectId")
                         current_test = None
-        except Exception as e:
-            print(f"[get_test_questions] Error finding test: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             current_test = None
 
         if not current_test:
             return Response({"error": "Test not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Questions are linked to Course, not PracticeTest
-        # Query questions by course
-        questions = Question.objects(course=course).order_by('created_at')
-
-        # Check if we should also filter by PracticeTest (if questions have category field)
-        # First, try to get questions linked to this PracticeTest via category
+        questions_list = []
         try:
             from exams.models import Question as ExamQuestion
-            exam_questions = ExamQuestion.objects(
-                category=current_test).order_by('created_at')
-            if exam_questions.count() > 0:
-                # Use questions from exams app (linked to PracticeTest)
-                questions = exam_questions
-                print(
-                    f"[get_test_questions] Found {exam_questions.count()} questions linked to PracticeTest")
-        except Exception as e:
-            print(
-                f"[get_test_questions] No questions in exams app, using questions app: {e}")
-            # Continue with questions from questions app (linked to Course)
-            pass
+            questions_list = list(
+                ExamQuestion.objects(category=current_test)
+                .order_by('created_at')
+                .no_dereference()
+            )
+        except Exception:
+            questions_list = []
 
-        # Limit questions based on test configuration (if specified)
+        if not questions_list:
+            questions_list = list(
+                Question.objects(course=course_oid)
+                .order_by('created_at')
+                .no_dereference()
+            )
+
         test_questions_count = getattr(current_test, 'questions', 0)
-        questions_list = list(questions)
 
         if test_questions_count > 0 and len(questions_list) > test_questions_count:
             # Shuffle and limit if test specifies a limit
@@ -351,13 +312,7 @@ def get_test_questions(request, course_id, test_id):
             random.shuffle(questions_list)
             questions_list = questions_list[:test_questions_count]
 
-        print(
-            f"[get_test_questions] Returning {len(questions_list)} questions for test {current_test.id}")
-
-        # Check if we have any questions
         if len(questions_list) == 0:
-            print(
-                f"[get_test_questions] No questions found for course {course.id}")
             return Response({
                 "success": False,
                 "error": "No questions available for this test. Please add questions to the course first.",

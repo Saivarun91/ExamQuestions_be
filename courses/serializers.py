@@ -259,11 +259,23 @@ class CourseSerializer(serializers.Serializer):
             )
 
             linked = list(PracticeTest.objects(course=instance).order_by('created_at'))
-            exam_q_by_pt = _exam_question_counts_by_practice_test(
-                [pt.id for pt in linked]
+            # Prefer stored counts on the hot public path. Scanning the questions
+            # collection on every exam GET was a multi-second crawl bottleneck.
+            missing_count_ids = [
+                pt.id
+                for pt in linked
+                if int(getattr(pt, "questions", 0) or 0) <= 0
+            ]
+            exam_q_by_pt = (
+                _exam_question_counts_by_practice_test(missing_count_ids)
+                if missing_count_ids
+                else {}
             )
             for pt in linked:
                 append_pt(pt)
+                live = int(exam_q_by_pt.get(str(pt.id), 0) or 0)
+                if live <= 0:
+                    continue
                 for row in practice_tests_list:
                     if row.get('id') == str(pt.id):
                         row['questions'] = _practice_test_question_count(

@@ -29,6 +29,12 @@ def _clamp_provider_description(value):
     return clamp_to_word_limit(value)
 
 
+def _invalidate_public_provider_cache():
+    from common.public_cache import cache_delete_prefix, invalidate_public_http_paths
+    cache_delete_prefix("provider:")
+    invalidate_public_http_paths("/api/providers")
+
+
 def _provider_name_taken(name, exclude_id=None):
     normalized = (name or "").strip()
     if not normalized:
@@ -373,6 +379,7 @@ def provider_create(request):
     serializer = ProviderSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save()
+        _invalidate_public_provider_cache()
         return Response(serializer.data, status=201)
     return Response(serializer.errors, status=400)
 
@@ -381,11 +388,20 @@ def provider_create(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def provider_detail(request, provider_slug):
+    from common.public_cache import cache_get, cache_set, public_json_response
+
+    cache_key = f"provider:detail:{provider_slug}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return public_json_response(cached)
+
     provider = Provider.objects(slug=provider_slug).first()
     if not provider:
         return Response({'error': 'Provider not found'}, status=404)
     serializer = ProviderSerializer(provider, context={'request': request})
-    return Response(serializer.data)
+    payload = serializer.data
+    cache_set(cache_key, payload)
+    return public_json_response(payload)
 
 
 # ✅ Update provider by slug
@@ -398,6 +414,7 @@ def provider_update(request, provider_slug):
     serializer = ProviderSerializer(provider, data=request.data, partial=True)
     if serializer.is_valid():
         serializer.save()
+        _invalidate_public_provider_cache()
         return Response(serializer.data)
     return Response(serializer.errors, status=400)
 
@@ -410,6 +427,7 @@ def provider_delete(request, provider_slug):
     if not provider:
         return Response({'error': 'Provider not found'}, status=404)
     provider.delete()
+    _invalidate_public_provider_cache()
     return Response({'message': 'Provider deleted successfully'}, status=200)
 
 

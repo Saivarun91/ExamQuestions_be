@@ -9,6 +9,7 @@ urlpatterns = [
     path('admin/<str:course_id>/delete/', views.course_delete, name='course_delete'),
 
     # Pricing Management APIs
+    path('admin/pricing-access/bulk/', views.bulk_update_pricing_access, name='bulk_update_pricing_access'),
     path('admin/<str:course_id>/pricing/', views.manage_course_pricing, name='manage_course_pricing'),
 
     # Single course GET (must stay after list/create/update/delete/pricing so paths are unambiguous)

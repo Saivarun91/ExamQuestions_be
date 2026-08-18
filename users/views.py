@@ -32,6 +32,11 @@ from django.core.exceptions import ValidationError
 # ================= JWT HELPER =================
 SECRET_KEY = settings.SECRET_KEY
 
+# Distinguishes signup OTPs from password-reset OTPs in PasswordResetToken.token
+# without changing models.py
+SIGNUP_TOKEN_PREFIX = "signup:"
+
+
 def generate_jwt(payload):
     """Generate a JWT token with a 7-day expiry."""
     payload["exp"] = datetime.utcnow() + timedelta(days=7)
@@ -39,6 +44,38 @@ def generate_jwt(payload):
     if isinstance(token, bytes):
         token = token.decode("utf-8")
     return token
+
+
+def _normalize_auth_email(email):
+    return (email or "").strip().lower()
+
+
+def _is_signup_otp_token(token_doc):
+    token_value = getattr(token_doc, "token", None) or ""
+    return str(token_value).startswith(SIGNUP_TOKEN_PREFIX)
+
+
+def _find_otp_token(email, otp, used, signup_only):
+    """Find an OTP token; signup_only=True for signup, False for password reset."""
+    candidates = PasswordResetToken.objects(email=email, otp=otp, used=used)
+    for token_doc in candidates:
+        is_signup = _is_signup_otp_token(token_doc)
+        if signup_only and is_signup:
+            return token_doc
+        if not signup_only and not is_signup:
+            return token_doc
+    return None
+
+
+def _invalidate_unused_signup_otps(email):
+    try:
+        old_tokens = PasswordResetToken.objects(email=email, used=False)
+        for token in old_tokens:
+            if _is_signup_otp_token(token):
+                token.used = True
+                token.save()
+    except Exception as e:
+        print(f"Error invalidating old signup tokens: {e}")
 
 
 # ================= reCAPTCHA HELPER =================
@@ -105,16 +142,176 @@ def verify_recaptcha(token):
         return False, "reCAPTCHA verification error. Please try again."
 
 
+# ================= SIGNUP EMAIL OTP =================
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def send_signup_otp(request):
+    """Send OTP to verify email before signup. Does not create a user."""
+    try:
+        data = request.data
+        email = _normalize_auth_email(data.get("email") if hasattr(data, "get") else None)
+        fullname = (data.get("fullname") or "").strip() if hasattr(data, "get") else ""
+
+        if not email:
+            return Response(
+                {"error": "Email is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if User.objects(email__iexact=email).first():
+            return Response(
+                {"error": "Email already exists. Please login or use a different email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otp = "".join(random.choices(string.digits, k=6))
+        expires_at = datetime.utcnow() + timedelta(minutes=15)
+
+        _invalidate_unused_signup_otps(email)
+
+        try:
+            unique_token = f"{SIGNUP_TOKEN_PREFIX}{uuid.uuid4()}"
+            signup_token = PasswordResetToken(
+                email=email,
+                otp=otp,
+                token=unique_token,
+                expires_at=expires_at,
+            )
+            signup_token.save()
+        except Exception as e:
+            print(f"Error creating signup OTP token: {e}")
+            return Response(
+                {"error": "Failed to create verification code. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            from email_templates.utils import get_email_template, send_template_email, unpack_template_data
+
+            user_name = fullname if fullname else "Student"
+            template_context = {"name": user_name, "email": email, "otp": otp}
+
+            template_data = get_email_template("Signup Email OTP", template_context)
+            if not template_data:
+                template_data = get_email_template("Email Verification OTP", template_context)
+            if not template_data:
+                # Reuse existing active password-reset OTP template so signup works
+                # without requiring a new CMS template immediately.
+                template_data = get_email_template("Password Reset OTP", template_context)
+
+            if not template_data:
+                print("✗ ERROR: No email template found for signup OTP")
+                return Response(
+                    {"error": "Email template not configured. Please contact administrator."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            subject, html_message, plain_message, _attachments = unpack_template_data(template_data)
+            print(f"✓ Sending signup OTP email to {email} (subject: {subject[:50]}...)")
+            send_template_email([email], template_data, fail_silently=False)
+            print(f"✓ Signup OTP email sent successfully to {email}")
+        except Exception as e:
+            print(f"✗ Error sending signup OTP email: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return Response(
+                {"error": "Failed to send email. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"success": True, "message": "OTP has been sent to your email."},
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        import traceback
+        print(f"Send signup OTP error: {e}")
+        print(traceback.format_exc())
+        return Response(
+            {"error": f"An error occurred: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def verify_signup_otp(request):
+    """Verify email OTP for signup (marks token used; register consumes it)."""
+    try:
+        data = request.data
+        if not data or (not isinstance(data, dict) and not hasattr(data, "get")):
+            try:
+                data = json.loads(request.body.decode("utf-8"))
+            except Exception as e:
+                return Response(
+                    {"error": f"Invalid JSON in request body: {str(e)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        email = _normalize_auth_email(data.get("email") if hasattr(data, "get") else None)
+        otp = str((data.get("otp") if hasattr(data, "get") else None) or "").strip()
+
+        if not email:
+            return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not otp:
+            return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects(email__iexact=email).first():
+            return Response(
+                {"error": "Email already exists. Please login."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        signup_token = _find_otp_token(email, otp, used=False, signup_only=True)
+
+        if not signup_token:
+            used_token = _find_otp_token(email, otp, used=True, signup_only=True)
+            if used_token:
+                return Response(
+                    {"error": "This OTP has already been used. Please request a new one."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(
+                {"error": "Invalid OTP. Please check and try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if datetime.utcnow() > signup_token.expires_at:
+            signup_token.used = True
+            signup_token.save()
+            return Response(
+                {"error": "OTP has expired. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        signup_token.used = True
+        signup_token.save()
+
+        return Response(
+            {"success": True, "message": "Email verified successfully"},
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        import traceback
+        print(f"Verify signup OTP error: {e}")
+        print(traceback.format_exc())
+        return Response(
+            {"error": f"An error occurred: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
 # ================= REGISTER =================
 @api_view(["POST"])
 def register_user(request):
     try:
         data = request.data
-        email = data.get("email")
+        email = _normalize_auth_email(data.get("email"))
         fullname = data.get("fullname", "").strip()
         password = data.get("password")
         phone_number = data.get("phone_number", "").strip()
         recaptcha_token = data.get("recaptcha_token")
+        otp = str(data.get("otp") or "").strip()
         
         # Verify reCAPTCHA token
         recaptcha_valid, recaptcha_error = verify_recaptcha(recaptcha_token)
@@ -130,12 +327,42 @@ def register_user(request):
                 {"error": "Email and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if not otp:
+            return Response(
+                {"error": "Email verification OTP is required. Please verify your email first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         
-        if User.objects(email=email).first():
+        if User.objects(email__iexact=email).first():
             return Response(
                 {"error": "Email already exists."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Require a valid signup OTP for this email (verified used=True, or still unused)
+        signup_token = _find_otp_token(email, otp, used=True, signup_only=True)
+        if not signup_token:
+            signup_token = _find_otp_token(email, otp, used=False, signup_only=True)
+
+        if not signup_token:
+            return Response(
+                {"error": "Invalid or unverified OTP. Please verify your email first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if datetime.utcnow() > signup_token.expires_at:
+            signup_token.used = True
+            signup_token.save()
+            return Response(
+                {"error": "OTP has expired. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Mark consumed before creating user (idempotent if already used from verify step)
+        if not signup_token.used:
+            signup_token.used = True
+            signup_token.save()
         
         # ✅ Create user
         user = User(
@@ -145,6 +372,13 @@ def register_user(request):
         )
         user.set_password(password)
         user.save()
+
+        # Expire signup OTP so it cannot be reused after successful registration
+        try:
+            signup_token.expires_at = datetime.utcnow() - timedelta(seconds=1)
+            signup_token.save()
+        except Exception as e:
+            print(f"Warning: failed to expire signup OTP after register: {e}")
         
         # ✅ Generate JWT token (use consistent key "id")
         # token = generate_jwt({"id": str(user.id), "email": user.email, "role": user.role})
@@ -646,10 +880,12 @@ def forgot_password(request):
         otp = ''.join(random.choices(string.digits, k=6))
         expires_at = datetime.utcnow() + timedelta(minutes=15)
 
-        # Invalidate old tokens for this email
+        # Invalidate old password-reset tokens for this email (not signup OTPs)
         try:
             old_tokens = PasswordResetToken.objects(email=email, used=False)
             for token in old_tokens:
+                if _is_signup_otp_token(token):
+                    continue
                 token.used = True
                 token.save()
         except Exception as e:
@@ -782,19 +1018,11 @@ def verify_otp(request):
         # Debug logging
         print(f"[DEBUG verify_otp] Looking for token with email: {email}, otp: {otp}")
         
-        reset_token = PasswordResetToken.objects(
-            email=email,
-            otp=otp,
-            used=False
-        ).first()
+        reset_token = _find_otp_token(email, otp, used=False, signup_only=False)
 
         if not reset_token:
             # Check if OTP exists but is already used
-            used_token = PasswordResetToken.objects(
-                email=email,
-                otp=otp,
-                used=True
-            ).first()
+            used_token = _find_otp_token(email, otp, used=True, signup_only=False)
             
             if used_token:
                 return Response(
@@ -803,7 +1031,11 @@ def verify_otp(request):
                 )
             
             # Check if email exists but OTP doesn't match
-            email_tokens = PasswordResetToken.objects(email=email, used=False).first()
+            email_tokens = None
+            for t in PasswordResetToken.objects(email=email, used=False):
+                if not _is_signup_otp_token(t):
+                    email_tokens = t
+                    break
             if email_tokens:
                 return Response(
                     {"error": "Invalid OTP. Please check and try again."},
@@ -900,20 +1132,12 @@ def reset_password(request):
         # Debug logging
         print(f"[DEBUG reset_password] Looking for used token with email: {email}, otp: {otp}")
         
-        # Verify OTP was used (from verify_otp step)
-        reset_token = PasswordResetToken.objects(
-            email=email,
-            otp=otp,
-            used=True
-        ).first()
+        # Verify OTP was used (from verify_otp step) — password-reset tokens only
+        reset_token = _find_otp_token(email, otp, used=True, signup_only=False)
 
         if not reset_token:
             # Check if OTP exists but hasn't been verified yet
-            unverified_token = PasswordResetToken.objects(
-                email=email,
-                otp=otp,
-                used=False
-            ).first()
+            unverified_token = _find_otp_token(email, otp, used=False, signup_only=False)
             
             if unverified_token:
                 return Response(

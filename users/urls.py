@@ -16,7 +16,7 @@ from .views import (
     register_user, login_user, user_profile,current_user,
     register_admin, login_admin, admin_profile, update_admin_credentials,
     forgot_password, verify_otp, reset_password, google_oauth, get_all_users,
-    search_users_by_email
+    search_users_by_email, send_signup_otp, verify_signup_otp
 )
 
 urlpatterns = [
@@ -26,6 +26,8 @@ urlpatterns = [
     path("forgot-password/", forgot_password, name="forgot-password"),
     path("verify-otp/", verify_otp, name="verify-otp"),
     path("reset-password/", reset_password, name="reset-password"),
+    path("send-signup-otp/", send_signup_otp, name="send-signup-otp"),
+    path("verify-signup-otp/", verify_signup_otp, name="verify-signup-otp"),
     path("google-oauth/", google_oauth, name="google-oauth"),
     path('profile/', user_profile, name='user_profile'),
 

@@ -3345,6 +3345,56 @@ def _iso_utc(dt):
         return None
 
 
+def _parse_filter_date(value, end_of_day=False):
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(str(value).strip()[:10], "%Y-%m-%d")
+        if end_of_day:
+            return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+    except ValueError:
+        return None
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _object_id_creation_time(value):
+    if not value:
+        return None
+    try:
+        oid_str = str(value)
+        if ObjectId.is_valid(oid_str):
+            return ObjectId(oid_str).generation_time.replace(tzinfo=None)
+    except Exception:
+        pass
+    return None
+
+
+def _count_leads_in_range(date_from_dt, date_to_dt):
+    from leads.models import Lead
+
+    query = {}
+    if date_from_dt:
+        query["created_at__gte"] = date_from_dt
+    if date_to_dt:
+        query["created_at__lte"] = date_to_dt
+    if not query:
+        return Lead.objects.count()
+    return Lead.objects(**query).count()
+
+
 @csrf_exempt
 @authenticate
 @restrict(["admin"])
@@ -3362,6 +3412,10 @@ def list_test_attempts(request):
         exam_id = (request.GET.get("exam_id") or "").strip()
         test_id = (request.GET.get("test_id") or request.GET.get("category_id") or "").strip()
         search = (request.GET.get("search") or "").strip().lower()
+        date_from_raw = (request.GET.get("date_from") or "").strip()
+        date_to_raw = (request.GET.get("date_to") or "").strip()
+        date_from_dt = _parse_filter_date(date_from_raw, end_of_day=False)
+        date_to_dt = _parse_filter_date(date_to_raw, end_of_day=True)
         try:
             page = max(1, int(request.GET.get("page") or 1))
         except (TypeError, ValueError):
@@ -3400,10 +3454,15 @@ def list_test_attempts(request):
 
         users_map = {}
         if user_ids:
-            for u in User.objects(id__in=list(user_ids)).only("fullname", "email"):
+            for u in User.objects(id__in=list(user_ids)).only(
+                "fullname", "email", "phone_number", "location"
+            ):
                 users_map[str(u.id)] = {
                     "name": getattr(u, "fullname", None) or u.email or "Unknown",
                     "email": u.email or "",
+                    "phone": getattr(u, "phone_number", None) or "",
+                    "location": getattr(u, "location", None) or "",
+                    "signed_up_at": _iso_utc(_object_id_creation_time(u.id)),
                 }
 
         categories_map = {}
@@ -3439,9 +3498,12 @@ def list_test_attempts(request):
             user_id_str = str(uid) if uid else ""
             user_name = user_info["name"] if user_info else "Unknown"
             user_email = user_info["email"] if user_info else ""
+            user_phone = user_info["phone"] if user_info else ""
+            user_location = user_info["location"] if user_info else ""
+            user_signed_up_at = user_info["signed_up_at"] if user_info else None
 
             if search:
-                hay = f"{user_name} {user_email}".lower()
+                hay = f"{user_name} {user_email} {user_phone}".lower()
                 if search not in hay:
                     continue
 
@@ -3461,6 +3523,9 @@ def list_test_attempts(request):
                 "user_id": user_id_str,
                 "user_name": user_name,
                 "user_email": user_email,
+                "user_phone": user_phone,
+                "user_location": user_location,
+                "user_signed_up_at": user_signed_up_at,
                 "exam_id": course_id or (str(exam_oid) if exam_oid else ""),
                 "exam_title": exam_title,
                 "exam_code": exam_code,
@@ -3477,8 +3542,26 @@ def list_test_attempts(request):
                 "created_at": _iso_utc(raw.get("created_at")),
             })
 
-        # Per-exam summary (attempt counts + unique members) computed before the
-        # exam filter so the filter dropdown always shows every exam.
+        # Date filter first so "All Exams" + selected date returns every exam's
+        # results in that range, and the exam dropdown counts match the same set.
+        if date_from_dt or date_to_dt:
+            date_filtered_rows = []
+            for row in rows:
+                attempt_dt = (
+                    _parse_iso_datetime(row.get("completed_at"))
+                    or _parse_iso_datetime(row.get("created_at"))
+                )
+                if not attempt_dt:
+                    continue
+                if date_from_dt and attempt_dt < date_from_dt:
+                    continue
+                if date_to_dt and attempt_dt > date_to_dt:
+                    continue
+                date_filtered_rows.append(row)
+            rows = date_filtered_rows
+
+        # Per-exam summary after date filter (before exam filter) so the dropdown
+        # lists every exam that has attempts in the active date range / all time.
         exam_summary = {}
         for row in rows:
             key = row["exam_id"] or "unknown"
@@ -3509,8 +3592,12 @@ def list_test_attempts(request):
             key=lambda x: (-x["attempts"], x["exam_title"].lower()),
         )
 
+        # Optional single-exam filter (empty exam_id = All Exams).
         if exam_id:
-            rows = [r for r in rows if r["exam_id"] == exam_id]
+            rows = [r for r in rows if str(r.get("exam_id") or "") == exam_id]
+
+        leads_count = _count_leads_in_range(date_from_dt, date_to_dt)
+        date_filter_active = bool(date_from_dt or date_to_dt)
 
         total = len(rows)
         unique_members = len({
@@ -3525,6 +3612,12 @@ def list_test_attempts(request):
             "data": page_rows,
             "total": total,
             "unique_members": unique_members,
+            "leads_count": leads_count,
+            "date_filter": {
+                "from": date_from_raw or None,
+                "to": date_to_raw or None,
+                "active": date_filter_active,
+            },
             "page": page,
             "page_size": page_size,
             "exams": exams_out,

@@ -22,6 +22,12 @@ from common.pagination import (
 )
 
 
+def _invalidate_public_category_cache():
+    from common.public_cache import cache_delete_prefix, invalidate_public_http_paths
+    cache_delete_prefix("category:")
+    invalidate_public_http_paths("/api/categories")
+
+
 def _positive_int_param(value, default, max_value=None):
     try:
         parsed = int(value)
@@ -111,6 +117,11 @@ def category_list(request):
 
         lite = request.GET.get("lite", "").lower() in ("1", "true", "yes")
         if lite:
+            from common.public_cache import cache_get, cache_set, public_json_response
+
+            cached = cache_get("category:list:lite")
+            if cached is not None:
+                return public_json_response(cached)
             categories = Category._get_collection().find(
                 {},
                 {
@@ -122,25 +133,24 @@ def category_list(request):
                     "is_active": 1,
                 },
             ).sort("title", 1)
-            return Response(
-                [
-                    {
-                        "id": str(category.get("_id")),
-                        "title": category.get("title") or "",
-                        "name": category.get("title") or "",
-                        "slug": category.get("slug") or "",
-                        "main_category": category.get("main_category") or "",
-                        "icon": category.get("icon") or "",
-                        "is_top_certification": category.get(
-                            "is_top_certification",
-                            False,
-                        ),
-                        "is_active": category.get("is_active", True),
-                    }
-                    for category in categories
-                ],
-                status=status.HTTP_200_OK,
-            )
+            payload = [
+                {
+                    "id": str(category.get("_id")),
+                    "title": category.get("title") or "",
+                    "name": category.get("title") or "",
+                    "slug": category.get("slug") or "",
+                    "main_category": category.get("main_category") or "",
+                    "icon": category.get("icon") or "",
+                    "is_top_certification": category.get(
+                        "is_top_certification",
+                        False,
+                    ),
+                    "is_active": category.get("is_active", True),
+                }
+                for category in categories
+            ]
+            cache_set("category:list:lite", payload)
+            return public_json_response(payload)
 
         categories = Category.objects.all()
         serializer = CategorySerializer(
@@ -207,6 +217,7 @@ def category_create(request):
                 serializer.save()
             except NotUniqueError as exc:
                 return not_unique_conflict(exc, field="title")
+            _invalidate_public_category_cache()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         errors = serializer.errors
         title_errors = errors.get("title")
@@ -235,6 +246,13 @@ def category_create(request):
 def category_detail(request, slug):
     """Get a single category by slug"""
     try:
+        from common.public_cache import cache_get, cache_set, public_json_response
+
+        cache_key = f"category:detail:{slug}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return public_json_response(cached)
+
         category = Category.objects(slug=slug).first()
         if not category:
             return Response(
@@ -243,7 +261,9 @@ def category_detail(request, slug):
             )
 
         serializer = CategorySerializer(category, context={"request": request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        payload = serializer.data
+        cache_set(cache_key, payload)
+        return public_json_response(payload)
     except Exception as e:
         return Response(
             {"error": str(e)},
@@ -293,6 +313,7 @@ def category_update(request, slug):
                 serializer.save()
             except NotUniqueError as exc:
                 return not_unique_conflict(exc, field="title")
+            _invalidate_public_category_cache()
             return Response(serializer.data, status=status.HTTP_200_OK)
         errors = serializer.errors
         title_errors = errors.get("title")
@@ -329,6 +350,7 @@ def category_delete(request, slug):
             )
 
         category.delete()
+        _invalidate_public_category_cache()
         return Response(
             {"message": "Category deleted successfully"},
             status=status.HTTP_200_OK

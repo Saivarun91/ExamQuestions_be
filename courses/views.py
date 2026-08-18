@@ -28,6 +28,14 @@ from .counts import (
     sync_course_counts,
 )
 from .code_utils import display_course_code, internal_course_code
+from common.public_cache import (
+    DEFAULT_TTL_SECONDS,
+    cache_delete_prefix,
+    cache_get,
+    cache_set,
+    invalidate_public_http_paths,
+    public_json_response,
+)
 
 
 def _provider_input_is_empty(provider_input):
@@ -234,18 +242,27 @@ def _course_is_featured(course):
 
 def _get_admin_featured_courses(limit=None):
     """Active courses explicitly marked featured in admin (Popular/Featured checkbox)."""
-    candidates = Course.objects(is_active=True).order_by("-updated_at", "-created_at")
-    featured = [c for c in candidates if _course_is_featured(c)]
+    query = {
+        "is_active": True,
+        "is_featured": {"$in": [True, 1, "true", "1", "yes", "on"]},
+    }
+    cursor = (
+        Course._get_collection()
+        .find(query, {"_id": 1})
+        .sort([("updated_at", -1), ("created_at", -1)])
+    )
     if limit is not None:
-        return featured[:limit]
-    return featured
+        cursor = cursor.limit(max(1, int(limit)))
+    ids = [doc["_id"] for doc in cursor]
+    if not ids:
+        return []
+    by_id = {course.id: course for course in Course.objects(id__in=ids)}
+    return [by_id[oid] for oid in ids if oid in by_id]
 
 
-def _featured_course_lite_rows(limit=8):
+def _featured_course_lite_rows(limit=50):
     """Small card/listing shape for featured exam widgets."""
-    from providers.models import Provider
-
-    safe_limit = max(1, min(int(limit or 8), 50))
+    safe_limit = max(1, min(int(limit or 50), 200))
     docs = list(
         Course._get_collection()
         .find(
@@ -253,56 +270,18 @@ def _featured_course_lite_rows(limit=8):
                 "is_active": True,
                 "is_featured": {"$in": [True, 1, "true", "1", "yes", "on"]},
             },
-            {
-                "provider": 1,
-                "title": 1,
-                "code": 1,
-                "slug": 1,
-                "badge": 1,
-                "is_featured": 1,
-                "is_active": 1,
-                "updated_at": 1,
-                "created_at": 1,
-            },
+            _LITE_COURSE_PROJECTION,
         )
         .sort([("updated_at", -1), ("created_at", -1)])
         .limit(safe_limit)
     )
-
-    provider_ids = {
-        doc.get("provider")
-        for doc in docs
-        if isinstance(doc.get("provider"), ObjectId)
-    }
-    providers = {
-        doc["_id"]: doc
-        for doc in Provider._get_collection().find(
-            {"_id": {"$in": list(provider_ids)}},
-            {"name": 1, "slug": 1},
-        )
-    } if provider_ids else {}
-
-    return [
-        {
-            "id": str(doc.get("_id")),
-            "provider": (providers.get(doc.get("provider")) or {}).get("name") or "",
-            "provider_id": (
-                str(doc.get("provider"))
-                if isinstance(doc.get("provider"), ObjectId)
-                else None
-            ),
-            "provider_slug": (providers.get(doc.get("provider")) or {}).get("slug"),
-            "title": doc.get("title") or "",
-            "name": doc.get("title") or "",
-            "code": display_course_code(doc.get("code"), doc.get("slug")),
-            "slug": doc.get("slug") or "",
-            "badge": doc.get("badge") or "",
-            "is_featured": bool(doc.get("is_featured", False)),
-            "is_active": doc.get("is_active", True),
-            "updated_at": doc.get("updated_at"),
-        }
-        for doc in docs
-    ]
+    for doc in docs:
+        if "has_exam_details" not in doc:
+            doc["has_exam_details"] = bool(
+                str(doc.get("meta_title") or "").strip()
+                or str(doc.get("page_heading") or "").strip()
+            )
+    return _public_course_rows_from_docs(docs, include_live_stats=True)
 
 
 # Stored in MongoDB for exam-details pages but not declared on Course — MongoEngine
@@ -504,7 +483,7 @@ def _find_official_details_sibling(course):
     if course.provider:
         query = query.filter(provider=course.provider)
 
-    for sibling in query:
+    for sibling in _limited_list(query, limit=12):
         sibling_raw = _fetch_course_extra_doc(sibling.id)
         if _has_official_details_data(sibling, sibling_raw):
             return sibling, sibling_raw
@@ -597,7 +576,8 @@ def _find_practice_sibling_for_official(course, extra_doc=None):
         nonlocal best, best_score
         if not sibling or str(sibling.id) == str(course.id):
             return
-        if not _course_has_practice_hub_content(sibling):
+        # Exam-details siblings are valid even with 0 practice tests.
+        if _is_official_details_only_course(sibling):
             return
         score = 0
         sibling_code = str(getattr(sibling, "code", "") or "").strip()
@@ -622,7 +602,7 @@ def _find_practice_sibling_for_official(course, extra_doc=None):
         )
         if course.provider:
             query = query.filter(provider=course.provider)
-        for sibling in query:
+        for sibling in _limited_list(query, limit=12):
             consider(sibling)
 
     if best:
@@ -648,10 +628,13 @@ def _find_practice_sibling_for_official(course, extra_doc=None):
     # Catch production variants not listed above (e.g. "-online-practice-exams").
     if best is None:
         try:
-            for sibling in Course.objects.filter(
-                slug__istartswith=f"{base}-",
-                is_active=True,
-                id__ne=course.id,
+            for sibling in _limited_list(
+                Course.objects.filter(
+                    slug__istartswith=f"{base}-",
+                    is_active=True,
+                    id__ne=course.id,
+                ),
+                limit=25,
             ):
                 sibling_slug = str(getattr(sibling, "slug", "") or "").strip().lower()
                 if not sibling_slug.startswith(f"{base}-"):
@@ -671,8 +654,8 @@ def _attach_linked_practice_slug(serialized, course, extra_doc=None):
     if out.get("linked_practice_slug"):
         return out
 
-    # If this course itself is the practice hub, expose its own slug.
-    if _course_has_practice_hub_content(course, extra_doc):
+    # If this course itself has an exam page (tests optional), expose its own slug.
+    if not _is_official_details_only_course(course, extra_doc):
         own_slug = str(getattr(course, "slug", "") or "").strip()
         if own_slug:
             out["linked_practice_slug"] = own_slug
@@ -937,6 +920,418 @@ def _get_course_by_field(field_name, value, iexact=False):
         return None
     except MultipleObjectsReturned:
         return _pick_best_course(list(Course.objects(**lookup)))
+
+
+def _lookup_provider_exact(slug):
+    """Indexed provider match only — never slug__icontains collection scans."""
+    from providers.models import Provider
+
+    slug = str(slug or "").strip()
+    if not slug:
+        return None
+
+    collection = Provider._get_collection()
+    escaped = re.escape(slug)
+    doc = collection.find_one(
+        {
+            "$or": [
+                {"slug": slug},
+                {"slug": {"$regex": f"^{escaped}$", "$options": "i"}},
+                {"name": {"$regex": f"^{escaped}$", "$options": "i"}},
+            ]
+        },
+        {"_id": 1},
+    )
+    if not doc:
+        return None
+    try:
+        return Provider.objects.get(id=doc["_id"])
+    except Provider.DoesNotExist:
+        return None
+
+
+def _code_and_slug_variants(code_part, provider_slug, original_identifier, normalized_identifier):
+    """Exact code/slug spellings used by legacy public URLs (no substring scans)."""
+    code_part = str(code_part or "")
+    provider_slug = str(provider_slug or "")
+
+    code_variants = [
+        code_part.upper(),
+        code_part.upper().replace("-", "_"),
+        code_part.upper().replace("_", "-"),
+        code_part,
+        code_part.replace("-", "_").upper(),
+    ]
+
+    if "-" not in code_part and "_" not in code_part:
+        code_upper = code_part.upper()
+        if re.match(r"^[A-Z][A-Z0-9]*[0-9]+$", code_upper):
+            match = re.match(r"^([A-Z])(.+?)([0-9]+)$", code_upper)
+            if match:
+                first_letter, middle, numbers = match.groups()
+                code_variants.append(f"{first_letter}-{middle}-{numbers}")
+                code_variants.append(f"{first_letter}_{middle}_{numbers}")
+                if re.search(r"\d", middle):
+                    middle_split = re.sub(r"([A-Z])([0-9])", r"\1-\2", middle)
+                    code_variants.append(f"{first_letter}-{middle_split}-{numbers}")
+                    middle_split_underscore = re.sub(
+                        r"([A-Z])([0-9])", r"\1_\2", middle
+                    )
+                    code_variants.append(
+                        f"{first_letter}_{middle_split_underscore}_{numbers}"
+                    )
+
+        code_with_hyphens = re.sub(r"([A-Z])([0-9])", r"\1-\2", code_upper)
+        if code_with_hyphens != code_upper:
+            code_variants.append(code_with_hyphens)
+            code_variants.append(code_with_hyphens.replace("-", "_"))
+
+        code_after_numbers = re.sub(r"([0-9])([A-Z])", r"\1-\2", code_upper)
+        if code_after_numbers != code_upper:
+            code_variants.append(code_after_numbers)
+            code_variants.append(code_after_numbers.replace("-", "_"))
+
+        if code_upper.startswith("C") and "S" in code_upper:
+            sap_match = re.match(r"^(C)(S?[0-9]*[A-Z]*)([0-9]+)$", code_upper)
+            if sap_match:
+                c_part, middle_part, num_part = sap_match.groups()
+                code_variants.append(f"{c_part}-{middle_part}-{num_part}")
+                code_variants.append(f"{c_part}_{middle_part}_{num_part}")
+
+    slug_variants = [
+        f"{provider_slug}-{code_part.lower()}",
+        f"{provider_slug}-{code_part.lower().replace('_', '-')}",
+        original_identifier,
+        normalized_identifier,
+    ]
+    if "-" not in code_part and "_" not in code_part:
+        code_lower = code_part.lower()
+        if re.match(r"^[a-z][a-z0-9]*[0-9]+$", code_lower):
+            match = re.match(r"^([a-z])(.+?)([0-9]+)$", code_lower)
+            if match:
+                first_letter, middle, numbers = match.groups()
+                slug_variants.append(
+                    f"{provider_slug}-{first_letter}-{middle}-{numbers}"
+                )
+                if re.search(r"\d", middle):
+                    middle_split = re.sub(r"([a-z])([0-9])", r"\1-\2", middle)
+                    slug_variants.append(
+                        f"{provider_slug}-{first_letter}-{middle_split}-{numbers}"
+                    )
+        code_with_hyphens = re.sub(r"([a-z])([0-9])", r"\1-\2", code_lower)
+        if code_with_hyphens != code_lower:
+            slug_variants.append(f"{provider_slug}-{code_with_hyphens}")
+
+    def _unique(values):
+        seen = set()
+        out = []
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                out.append(value)
+        return out
+
+    return _unique(code_variants), _unique(slug_variants)
+
+
+def _resolve_course_by_provider_and_code(normalized_identifier, original_identifier):
+    """Legacy /provider-code URLs via indexed exact/iexact lookups only."""
+    if "-" not in normalized_identifier:
+        return None
+
+    all_parts = normalized_identifier.split("-")
+    # Full SEO slugs are not provider-code URLs; skip this fallback for them.
+    if len(all_parts) < 2 or len(all_parts) > 6:
+        return None
+    provider = None
+    provider_slug = None
+    code_part = None
+
+    if len(all_parts) >= 3:
+        provider_slug_alt = f"{all_parts[0]}-{all_parts[1]}"
+        provider = _lookup_provider_exact(provider_slug_alt)
+        if provider:
+            provider_slug = provider_slug_alt
+            code_part = "-".join(all_parts[2:])
+
+    if not provider and len(all_parts) >= 2:
+        provider_slug = all_parts[0]
+        code_part = "-".join(all_parts[1:])
+        provider = _lookup_provider_exact(provider_slug)
+        if not provider:
+            provider = _lookup_provider_exact(provider_slug.replace("-", " "))
+
+    if not provider or not code_part:
+        return None
+
+    code_variants, slug_variants = _code_and_slug_variants(
+        code_part, provider_slug, original_identifier, normalized_identifier
+    )
+
+    for code_variant in code_variants:
+        try:
+            return Course.objects.get(provider=provider, code__iexact=code_variant)
+        except Course.DoesNotExist:
+            continue
+        except MultipleObjectsReturned:
+            course = _pick_best_course(
+                list(Course.objects(provider=provider, code__iexact=code_variant))
+            )
+            if course:
+                return course
+
+    for slug_variant in slug_variants:
+        course = _get_course_by_field("slug", slug_variant) or _get_course_by_field(
+            "slug", slug_variant, iexact=True
+        )
+        if course:
+            return course
+        try:
+            return Course.objects.get(provider=provider, slug=slug_variant)
+        except Course.DoesNotExist:
+            try:
+                return Course.objects.get(provider=provider, slug__iexact=slug_variant)
+            except Course.DoesNotExist:
+                continue
+            except MultipleObjectsReturned:
+                course = _pick_best_course(
+                    list(
+                        Course.objects(
+                            provider=provider,
+                            slug__iexact=slug_variant,
+                        )
+                    )
+                )
+                if course:
+                    return course
+        except MultipleObjectsReturned:
+            course = _pick_best_course(
+                list(Course.objects(provider=provider, slug=slug_variant))
+            )
+            if course:
+                return course
+
+    return None
+
+
+def _resolve_course_by_unique_slug_prefix(normalized_identifier):
+    """Legacy renamed slugs: unique indexed prefix match only."""
+    identifier_lower = str(normalized_identifier or "").strip().lower()
+    if not identifier_lower:
+        return None
+
+    try:
+        prefix_matches = _limited_list(
+            Course.objects.filter(
+                slug__istartswith=identifier_lower,
+                is_active=True,
+            )
+        )
+    except Exception:
+        return None
+
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if len(prefix_matches) > 1:
+        continued = [
+            c
+            for c in prefix_matches
+            if c.slug.lower() == identifier_lower
+            or c.slug.lower().startswith(identifier_lower + "-")
+        ]
+        if len(continued) == 1:
+            return continued[0]
+    return None
+
+
+def _hydrate_course(oid):
+    if not oid:
+        return None
+    try:
+        return Course.objects.get(id=oid)
+    except Course.DoesNotExist:
+        return None
+
+
+_SLUG_LOOKUP_PROJECTION = {
+    "_id": 1,
+    "slug": 1,
+    "is_active": 1,
+    "show_in_official_details": 1,
+    "practice_exams": 1,
+    "meta_title": 1,
+    "page_heading": 1,
+    "updated_at": 1,
+}
+
+_LITE_COURSE_PROJECTION = {
+    "_id": 1,
+    "provider": 1,
+    "exam_name": 1,
+    "title": 1,
+    "code": 1,
+    "slug": 1,
+    "practice_exams": 1,
+    "questions": 1,
+    "badge": 1,
+    "category": 1,
+    "actual_price": 1,
+    "offer_price": 1,
+    "currency": 1,
+    "is_featured": 1,
+    "show_in_official_details": 1,
+    "official_details_url_slug": 1,
+    "meta_title": 1,
+    "meta_keywords": 1,
+    "meta_description": 1,
+    "is_active": 1,
+    "updated_at": 1,
+    "created_at": 1,
+    "page_heading": 1,
+}
+
+
+def _course_doc_lookup_score(doc):
+    if not doc:
+        return -1
+    score = 0
+    if doc.get("is_active", True):
+        score += 1000
+    if not _parse_bool(doc.get("show_in_official_details"), default=False):
+        score += 50
+    score += min(int(doc.get("practice_exams") or 0), 20) * 10
+    if str(doc.get("meta_title") or "").strip() or str(doc.get("page_heading") or "").strip():
+        score += 100
+    return score
+
+
+def _pick_best_course_doc(docs):
+    matches = [doc for doc in (docs or []) if doc]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    return max(matches, key=_course_doc_lookup_score)
+
+
+def _find_course_docs_by_slug_keys(identifier):
+    """Indexed slug lookup without hydrating 60KB MongoEngine documents."""
+    identifier = str(identifier or "").strip()
+    if not identifier:
+        return []
+
+    collection = Course._get_collection()
+    docs = list(
+        collection.find(
+            {
+                "$or": [
+                    {"slug": identifier},
+                    {"official_details_url_slug": identifier},
+                ]
+            },
+            _SLUG_LOOKUP_PROJECTION,
+        ).limit(8)
+    )
+    if docs:
+        return docs
+
+    if identifier == identifier.lower():
+        return []
+
+    escaped = re.escape(identifier)
+    rx = {"$regex": f"^{escaped}$", "$options": "i"}
+    return list(
+        collection.find(
+            {"$or": [{"slug": rx}, {"official_details_url_slug": rx}]},
+            _SLUG_LOOKUP_PROJECTION,
+        ).limit(8)
+    )
+
+
+def _resolve_public_course_oid(course_identifier):
+    from urllib.parse import unquote
+
+    course_identifier = unquote(str(course_identifier or "")).strip()
+    if not course_identifier:
+        return None
+
+    if ObjectId.is_valid(course_identifier):
+        return ObjectId(course_identifier)
+
+    doc = _pick_best_course_doc(_find_course_docs_by_slug_keys(course_identifier))
+    if doc:
+        return doc.get("_id")
+
+    normalized_identifier = course_identifier.lower().replace("_", "-")
+    if normalized_identifier != course_identifier:
+        doc = _pick_best_course_doc(
+            _find_course_docs_by_slug_keys(normalized_identifier)
+        )
+        if doc:
+            return doc.get("_id")
+
+    # Indexed exam-code lookup (AZ-900, SY0-701) without hydrating the course.
+    collection = Course._get_collection()
+    seen_codes = []
+    for code_key in (course_identifier, normalized_identifier):
+        if not code_key or code_key in seen_codes:
+            continue
+        seen_codes.append(code_key)
+        code_doc = collection.find_one({"code": code_key}, {"_id": 1})
+        if code_doc:
+            return code_doc.get("_id")
+        escaped = re.escape(code_key)
+        code_doc = collection.find_one(
+            {"code": {"$regex": f"^{escaped}$", "$options": "i"}},
+            {"_id": 1},
+        )
+        if code_doc:
+            return code_doc.get("_id")
+
+    course = _resolve_course_by_provider_and_code(
+        normalized_identifier, course_identifier
+    )
+    if course:
+        return course.id
+
+    parts = normalized_identifier.split("-")
+    if len(normalized_identifier) <= 48 and 1 < len(parts) <= 6:
+        prefix_course = _resolve_course_by_unique_slug_prefix(normalized_identifier)
+        if prefix_course:
+            return prefix_course.id
+    return None
+
+
+def _lite_payload_for_oid(oid, include_live_stats=False):
+    if not oid:
+        return None
+    doc = Course._get_collection().find_one({"_id": oid}, _LITE_COURSE_PROJECTION)
+    if not doc:
+        return None
+    if "has_exam_details" not in doc:
+        doc["has_exam_details"] = bool(
+            str(doc.get("meta_title") or "").strip()
+            or str(doc.get("page_heading") or "").strip()
+        )
+    rows = _public_course_rows_from_docs(
+        [doc], include_live_stats=include_live_stats
+    )
+    return rows[0] if rows else None
+
+
+def _invalidate_public_course_cache():
+    cache_delete_prefix("course:")
+    cache_delete_prefix("courses_list:")
+    cache_delete_prefix("courses_category:")
+    cache_delete_prefix("courses_provider:")
+    cache_delete_prefix("courses_featured:")
+    invalidate_public_http_paths("/api/courses", "/api/home")
+
+
+def _resolve_public_course(course_identifier):
+    """Hydrate a Course only after the cheap oid lookup has succeeded."""
+    oid = _resolve_public_course_oid(course_identifier)
+    return _hydrate_course(oid)
 
 
 def _build_partial_search_query(search):
@@ -1207,7 +1602,7 @@ def _public_course_paginated_list_from_raw(query=None, page=1, page_size=12):
     )
 
 
-def _public_course_rows_from_docs(docs):
+def _public_course_rows_from_docs(docs, include_live_stats=False):
     from categories.models import Category
     from providers.models import Provider
 
@@ -1278,7 +1673,18 @@ def _public_course_rows_from_docs(docs):
             "updated_at": doc.get("updated_at"),
         })
 
-    live_stats = bulk_course_practice_stats([row["id"] for row in rows])
+    if include_live_stats:
+        ids_needing_live = [
+            row["id"]
+            for row in rows
+            if int(row.get("practice_exams") or 0) <= 0
+            or int(row.get("questions") or 0) <= 0
+        ]
+        live_stats = (
+            bulk_course_practice_stats(ids_needing_live) if ids_needing_live else {}
+        )
+    else:
+        live_stats = {}
     for row in rows:
         counts = resolve_public_course_counts(
             row["id"],
@@ -1353,6 +1759,11 @@ def course_list(request):
                 return Response([])
 
         if lite:
+            cache_key = f"courses_list:{request.META.get('QUERY_STRING') or ''}"
+            cached = cache_get(cache_key)
+            if cached is not None:
+                return public_json_response(cached)
+
             query = {"is_active": True}
             if provider:
                 query["provider"] = provider.id
@@ -1384,10 +1795,12 @@ def course_list(request):
                     _positive_int_param(request, "limit", 12, 100),
                     100,
                 )
-                return Response(
-                    _public_course_paginated_list_from_raw(query, page, page_size)
-                )
-            return Response(_public_course_list_from_raw(query))
+                payload = _public_course_paginated_list_from_raw(query, page, page_size)
+                cache_set(cache_key, payload)
+                return public_json_response(payload)
+            payload = _public_course_list_from_raw(query)
+            cache_set(cache_key, payload)
+            return public_json_response(payload)
 
         courses = Course.objects(is_active=True).order_by('-created_at')
         if provider:
@@ -1575,6 +1988,7 @@ def course_create(request):
         sync_course_counts(course)
 
         serializer = CourseSerializer(course)
+        _invalidate_public_course_cache()
         return Response({"success": True, "message": "Course created successfully", "data": serializer.data}, status=201)
 
     except NotUniqueError as exc:
@@ -1595,389 +2009,49 @@ def course_detail(request, course_identifier):
     """Get course by ID or slug - SEO-friendly URL support"""
     try:
         from urllib.parse import unquote
-        from providers.models import Provider
 
         course_identifier = unquote(course_identifier).strip()
+        lite = str(request.GET.get("lite") or "").lower() in ("1", "true", "yes")
+        cache_key = f"course:{'lite' if lite else 'full'}:{course_identifier.lower()}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return public_json_response(cached)
 
-        course = None
-        if ObjectId.is_valid(course_identifier):
-            course = Course.objects.get(id=ObjectId(course_identifier))
-        else:
-            # Prefer exact slug; never 500 when duplicate practice/official rows share a slug.
-            course = (
-                _get_course_by_field("slug", course_identifier)
-                or _get_course_by_field("slug", course_identifier, iexact=True)
-                or _get_course_by_field(
-                    "official_details_url_slug", course_identifier
+        if lite:
+            oid = _resolve_public_course_oid(course_identifier)
+            if not oid:
+                return public_json_response(
+                    {"error": "Course not found"}, status=404, ttl=10
                 )
-                or _get_course_by_field(
-                    "official_details_url_slug", course_identifier, iexact=True
+            payload = _lite_payload_for_oid(oid, include_live_stats=False)
+            if not payload:
+                return public_json_response(
+                    {"error": "Course not found"}, status=404, ttl=10
                 )
-            )
+            cache_set(cache_key, payload)
+            return public_json_response(payload)
 
-        if course is None:
-            # Legacy SEO lookup (normalized lowercase slug + provider/code probing)
-            course_identifier = course_identifier.lower().replace('_', '-')
-
-            course = (
-                _get_course_by_field("slug", course_identifier)
-                or _get_course_by_field("slug", course_identifier, iexact=True)
-            )
-
-            if course is None:
-                    normalized_identifier = course_identifier.replace('_', '-')
-
-                    if '-' in normalized_identifier:
-                        all_parts = normalized_identifier.split('-')
-                        provider = None
-                        provider_slug = None
-                        code_part = None
-                        
-                        # Strategy 1: Try two-word provider first (e.g., "sap-se")
-                        if len(all_parts) >= 3:
-                            provider_slug_alt = f"{all_parts[0]}-{all_parts[1]}"
-                            code_part_alt = '-'.join(all_parts[2:])
-                            
-                            # Try to find provider with two-word slug
-                            provider_variants_alt = [
-                                provider_slug_alt,
-                                provider_slug_alt.upper(),
-                                provider_slug_alt.capitalize(),
-                                provider_slug_alt.replace('-', ' '),
-                                provider_slug_alt.replace('-', ' ').title(),
-                            ]
-                            
-                            for variant in provider_variants_alt:
-                                try:
-                                    provider = Provider.objects.get(slug=variant)
-                                    provider_slug = provider_slug_alt
-                                    code_part = code_part_alt
-                                    break
-                                except Provider.DoesNotExist:
-                                    try:
-                                        provider = Provider.objects.get(name__iexact=variant)
-                                        provider_slug = provider_slug_alt
-                                        code_part = code_part_alt
-                                        break
-                                    except Provider.DoesNotExist:
-                                        continue
-                        
-                        # Strategy 2: Try single-word provider (e.g., "sap")
-                        if not provider and len(all_parts) >= 2:
-                            provider_slug = all_parts[0]
-                            code_part = '-'.join(all_parts[1:])
-                            
-                            provider_variants = [
-                                provider_slug,
-                                provider_slug.upper(),
-                                provider_slug.capitalize(),
-                                provider_slug.replace('-', ' '),
-                                provider_slug.replace('-', ' ').title(),
-                            ]
-                            
-                            for variant in provider_variants:
-                                try:
-                                    provider = Provider.objects.get(slug=variant)
-                                    break
-                                except Provider.DoesNotExist:
-                                    try:
-                                        provider = Provider.objects.get(name__iexact=variant)
-                                        break
-                                    except Provider.DoesNotExist:
-                                        continue
-                            
-                            # If still not found, try partial match
-                            if not provider:
-                                try:
-                                    provider = _single_or_none(
-                                        Provider.objects.filter(slug__icontains=provider_slug)
-                                    )
-                                except Exception:
-                                    pass
-                        
-                        # Now try to find course with the found provider
-                        if provider and code_part:
-                            # Try multiple code format variations
-                            # The code might be stored as: SE-C_BW4H_2505, SE-C-BW4H-2505, SE-C-BW4H_2505, etc.
-                            code_variants = [
-                                code_part.upper(),  # se-c-bw4h-2505 -> SE-C-BW4H-2505
-                                code_part.upper().replace('-', '_'),  # SE-C_BW4H_2505
-                                code_part.upper().replace('_', '-'),  # SE-C-BW4H-2505
-                                code_part,  # se-c-bw4h-2505
-                                code_part.replace('-', '_').upper(),  # SE_C_BW4H_2505
-                            ]
-                            
-                            # If code_part has no separators, try adding them in common patterns
-                            # Example: cs4cs2508 -> C-S4CS-2508, C_S4CS_2508
-                            if '-' not in code_part and '_' not in code_part:
-                                code_upper = code_part.upper()
-                                
-                                # Pattern 1: Single letter prefix (e.g., C in CS4CS2508)
-                                # Match: single letter, then letters/numbers, then numbers at end
-                                if re.match(r'^[A-Z][A-Z0-9]*[0-9]+$', code_upper):
-                                    match = re.match(r'^([A-Z])(.+?)([0-9]+)$', code_upper)
-                                    if match:
-                                        first_letter, middle, numbers = match.groups()
-                                        # Try with hyphens
-                                        code_variants.append(f"{first_letter}-{middle}-{numbers}")
-                                        # Try with underscores
-                                        code_variants.append(f"{first_letter}_{middle}_{numbers}")
-                                        # Try splitting middle part if it has numbers
-                                        if re.search(r'\d', middle):
-                                            middle_split = re.sub(r'([A-Z])([0-9])', r'\1-\2', middle)
-                                            code_variants.append(f"{first_letter}-{middle_split}-{numbers}")
-                                            middle_split_underscore = re.sub(r'([A-Z])([0-9])', r'\1_\2', middle)
-                                            code_variants.append(f"{first_letter}_{middle_split_underscore}_{numbers}")
-                                
-                                # Pattern 2: Add hyphens before any number (general case)
-                                code_with_hyphens = re.sub(r'([A-Z])([0-9])', r'\1-\2', code_upper)
-                                if code_with_hyphens != code_upper:
-                                    code_variants.append(code_with_hyphens)
-                                    code_variants.append(code_with_hyphens.replace('-', '_'))
-                                
-                                # Pattern 3: Add hyphens after any number
-                                code_after_numbers = re.sub(r'([0-9])([A-Z])', r'\1-\2', code_upper)
-                                if code_after_numbers != code_upper:
-                                    code_variants.append(code_after_numbers)
-                                    code_variants.append(code_after_numbers.replace('-', '_'))
-                                
-                                # Pattern 4: Try common SAP patterns (e.g., C_S4CS_2508)
-                                # If it starts with C and has S4CS pattern
-                                if code_upper.startswith('C') and 'S' in code_upper:
-                                    # Try: C-S4CS-2508, C_S4CS_2508
-                                    sap_match = re.match(r'^(C)(S?[0-9]*[A-Z]*)([0-9]+)$', code_upper)
-                                    if sap_match:
-                                        c_part, middle_part, num_part = sap_match.groups()
-                                        code_variants.append(f"{c_part}-{middle_part}-{num_part}")
-                                        code_variants.append(f"{c_part}_{middle_part}_{num_part}")
-                            
-                            # Remove duplicates while preserving order
-                            seen = set()
-                            unique_code_variants = []
-                            for variant in code_variants:
-                                if variant and variant not in seen:
-                                    seen.add(variant)
-                                    unique_code_variants.append(variant)
-                            code_variants = unique_code_variants
-                            
-                            # Try to find course by provider and code (try all variants)
-                            for code_variant in code_variants:
-                                try:
-                                    course = Course.objects.get(provider=provider, code__iexact=code_variant)
-                                    break
-                                except Course.DoesNotExist:
-                                    continue
-                                except MultipleObjectsReturned:
-                                    course = _pick_best_course(
-                                        list(
-                                            Course.objects(
-                                                provider=provider,
-                                                code__iexact=code_variant,
-                                            )
-                                        )
-                                    )
-                                    if course:
-                                        break
-                            
-                            # If not found by code, try by slug variations
-                            if not course:
-                                slug_variants = [
-                                    f"{provider_slug}-{code_part.lower()}",  # sap-se-c-bw4h-2505
-                                    f"{provider_slug}-{code_part.lower().replace('_', '-')}",  # normalize underscores
-                                    course_identifier,  # original identifier
-                                    normalized_identifier,  # normalized identifier
-                                ]
-                                
-                                # If code_part has no separators, generate slug variants with separators
-                                if '-' not in code_part and '_' not in code_part:
-                                    code_lower = code_part.lower()
-                                    
-                                    # Generate slug variants similar to code variants
-                                    # Pattern: single letter prefix
-                                    if re.match(r'^[a-z][a-z0-9]*[0-9]+$', code_lower):
-                                        match = re.match(r'^([a-z])(.+?)([0-9]+)$', code_lower)
-                                        if match:
-                                            first_letter, middle, numbers = match.groups()
-                                            slug_variants.append(f"{provider_slug}-{first_letter}-{middle}-{numbers}")
-                                            # Try splitting middle if it has numbers
-                                            if re.search(r'\d', middle):
-                                                middle_split = re.sub(r'([a-z])([0-9])', r'\1-\2', middle)
-                                                slug_variants.append(f"{provider_slug}-{first_letter}-{middle_split}-{numbers}")
-                                    
-                                    # Add hyphens before numbers
-                                    code_with_hyphens = re.sub(r'([a-z])([0-9])', r'\1-\2', code_lower)
-                                    if code_with_hyphens != code_lower:
-                                        slug_variants.append(f"{provider_slug}-{code_with_hyphens}")
-                                
-                                # Remove duplicates
-                                seen_slugs = set()
-                                unique_slug_variants = []
-                                for variant in slug_variants:
-                                    if variant and variant not in seen_slugs:
-                                        seen_slugs.add(variant)
-                                        unique_slug_variants.append(variant)
-                                slug_variants = unique_slug_variants
-                                
-                                for slug_variant in slug_variants:
-                                    try:
-                                        course = Course.objects.get(provider=provider, slug=slug_variant)
-                                        break
-                                    except Course.DoesNotExist:
-                                        try:
-                                            course = Course.objects.get(provider=provider, slug__iexact=slug_variant)
-                                            break
-                                        except Course.DoesNotExist:
-                                            continue
-                                    except MultipleObjectsReturned:
-                                        course = _pick_best_course(
-                                            list(
-                                                Course.objects(
-                                                    provider=provider,
-                                                    slug__iexact=slug_variant,
-                                                )
-                                            )
-                                        )
-                                        if course:
-                                            break
-                            
-                            # Last resort: try to find any course with this provider and matching slug pattern
-                            if not course:
-                                try:
-                                    # Try partial slug match
-                                    course = _single_or_none(
-                                        Course.objects.filter(
-                                            provider=provider,
-                                            slug__icontains=code_part.lower(),
-                                        )
-                                    )
-                                except Exception:
-                                    pass
-                    
-                    # Final fallback: Try to find by slug pattern (case-insensitive, partial match)
-                    if not course:
-                        course = (
-                            _get_course_by_field("slug", course_identifier, iexact=True)
-                            or _get_course_by_field(
-                                "slug", normalized_identifier, iexact=True
-                            )
-                        )
-                        if not course:
-                            try:
-                                # Only accept a unique partial slug match — never guess among many.
-                                course = _single_or_none(
-                                    Course.objects.filter(
-                                        slug__icontains=course_identifier.lower()
-                                    )
-                                )
-                            except Exception:
-                                pass
-                    
-                    # Ultimate fallback: Search all courses by code pattern
-                    if not course and '-' in normalized_identifier:
-                        # Extract potential code from the identifier
-                        # For "sap-se-c-bw4h-2505", try to find course with code containing "se-c" or "bw4h"
-                        code_parts = normalized_identifier.split('-')
-                        if len(code_parts) >= 2:
-                            # Try to find by code pattern (e.g., "SE-C" or "BW4H")
-                            # Build code variations: "se-c-bw4h-2505" -> ["SE-C-BW4H-2505", "SE-C", "BW4H", "2505"]
-                            code_variations = []
-                            
-                            # Full code (uppercase)
-                            full_code = '-'.join(code_parts[1:]).upper()
-                            code_variations.append(full_code)
-                            
-                            # Code with underscores
-                            code_variations.append(full_code.replace('-', '_'))
-                            
-                            # Individual meaningful parts
-                            for part in code_parts[1:]:
-                                if len(part) >= 2 and part.isalnum():
-                                    code_variations.append(part.upper())
-                            
-                            # Try each variation
-                            for code_var in code_variations:
-                                try:
-                                    courses = _limited_list(
-                                        Course.objects.filter(code__icontains=code_var)
-                                    )
-                                    if len(courses) == 1:
-                                        course = courses[0]
-                                        break
-                                    elif len(courses) > 1:
-                                        # If multiple matches, try to find one with matching slug pattern
-                                        for c in courses:
-                                            c_slug_lower = c.slug.lower()
-                                            identifier_lower = normalized_identifier.lower()
-                                            if identifier_lower in c_slug_lower or c_slug_lower in identifier_lower:
-                                                course = c
-                                                break
-                                        if course:
-                                            break
-                                except Exception:
-                                    continue
-                            
-                            # Last resort: search by slug containing any part of the code
-                            if not course:
-                                for code_var in code_variations[:3]:  # Try first 3 variations
-                                    try:
-                                        course = _single_or_none(
-                                            Course.objects.filter(
-                                                slug__icontains=code_var.lower()
-                                            )
-                                        )
-                                        if course:
-                                            break
-                                    except Exception:
-                                        continue
-                    
-                    # Legacy public URLs: old slug is often a prefix of the current canonical slug.
-                    if not course:
-                        try:
-                            identifier_lower = normalized_identifier.lower()
-                            prefix_matches = _limited_list(
-                                Course.objects.filter(
-                                    slug__istartswith=identifier_lower,
-                                    is_active=True,
-                                )
-                            )
-                            if len(prefix_matches) == 1:
-                                course = prefix_matches[0]
-                            elif len(prefix_matches) > 1:
-                                continued = [
-                                    c
-                                    for c in prefix_matches
-                                    if c.slug.lower() == identifier_lower
-                                    or c.slug.lower().startswith(
-                                        identifier_lower + "-"
-                                    )
-                                ]
-                                if len(continued) == 1:
-                                    course = continued[0]
-                        except Exception:
-                            pass
-
-                    # If still not found, raise DoesNotExist
-                    if not course:
-                        # Log for debugging
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Course not found for identifier: {course_identifier}")
-                        raise Course.DoesNotExist()
-
-        # Ensure course was found
+        course = _resolve_public_course(course_identifier)
         if not course:
-                    raise Course.DoesNotExist()
+            return public_json_response(
+                {"error": "Course not found"}, status=404, ttl=10
+            )
 
         serializer = CourseSerializer(course)
-        raw = _fetch_course_extra_doc(course.id)
+        try:
+            raw = course.to_mongo().to_dict()
+        except Exception:
+            raw = _fetch_course_extra_doc(course.id)
         merged_data, merged_raw = _merge_linked_official_details_response(
             serializer.data, raw, course
         )
         merged_data = _attach_linked_practice_slug(merged_data, course, merged_raw)
-        return Response(_merge_course_extra_from_doc(merged_data, merged_raw))
+        payload = _merge_course_extra_from_doc(merged_data, merged_raw)
+        cache_set(cache_key, payload)
+        return public_json_response(payload)
 
     except Course.DoesNotExist:
-        return Response({"error": "Course not found"}, status=404)
+        return public_json_response({"error": "Course not found"}, status=404, ttl=10)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2306,6 +2380,7 @@ def course_update(request, course_id):
             response_payload["message"] = (
                 "Course updated, but some practice tests could not be saved."
             )
+        _invalidate_public_course_cache()
         return Response(response_payload)
 
     except Course.DoesNotExist:
@@ -2335,6 +2410,7 @@ def course_delete(request, course_id):
 
         course = Course.objects.get(id=ObjectId(course_id))
         course.delete()
+        _invalidate_public_course_cache()
 
         return Response({"success": True, "message": "Course deleted successfully"})
 
@@ -2354,22 +2430,39 @@ def courses_by_category(request, category_slug):
     try:
         from categories.models import Category
 
-        category = Category.objects.get(slug=category_slug)
-        courses = Course.objects(category=category, is_active=True).order_by('-created_at')
+        limit_param = request.GET.get("limit") or ""
+        cache_key = f"courses_category:{category_slug}:{limit_param}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return public_json_response(cached)
 
-        limit_param = request.GET.get('limit')
+        category = Category.objects(slug=category_slug).first()
+        if not category:
+            category = Category.objects(slug__iexact=category_slug).first()
+        if not category:
+            return public_json_response(
+                {"error": "Category not found"}, status=404, ttl=10
+            )
+
+        query = {"category": category.id, "is_active": True}
+        docs = list(
+            Course._get_collection()
+            .find(query, _LITE_COURSE_PROJECTION)
+            .sort("created_at", -1)
+        )
         if limit_param:
             try:
                 limit_n = max(1, min(50, int(limit_param)))
-                courses = courses[:limit_n]
+                docs = docs[:limit_n]
             except (TypeError, ValueError):
                 pass
 
-        serializer = CourseSerializer(courses, many=True)
-        return Response(serializer.data)
+        payload = _public_course_rows_from_docs(docs, include_live_stats=False)
+        cache_set(cache_key, payload)
+        return public_json_response(payload)
 
     except Category.DoesNotExist:
-        return Response({"error": "Category not found"}, status=404)
+        return public_json_response({"error": "Category not found"}, status=404, ttl=10)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
 
@@ -2386,24 +2479,36 @@ def courses_by_provider(request, provider_slug):
         from urllib.parse import unquote
 
         provider_slug = unquote(provider_slug).strip()
+        limit_param = request.GET.get("limit") or ""
+        cache_key = f"courses_provider:{provider_slug}:{limit_param}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return public_json_response(cached)
+
         provider = Provider.objects(slug=provider_slug).first()
         if not provider:
             provider = Provider.objects(slug__iexact=provider_slug).first()
         if not provider:
-            return Response({"error": "Provider not found"}, status=404)
+            return public_json_response(
+                {"error": "Provider not found"}, status=404, ttl=10
+            )
 
-        courses = Course.objects(provider=provider, is_active=True).order_by('-created_at')
-
-        limit_param = request.GET.get('limit')
+        query = {"provider": provider.id, "is_active": True}
+        docs = list(
+            Course._get_collection()
+            .find(query, _LITE_COURSE_PROJECTION)
+            .sort("created_at", -1)
+        )
         if limit_param:
             try:
                 limit_n = max(1, min(50, int(limit_param)))
-                courses = courses[:limit_n]
+                docs = docs[:limit_n]
             except (TypeError, ValueError):
                 pass
 
-        serializer = CourseSerializer(courses, many=True)
-        return Response(serializer.data)
+        payload = _public_course_rows_from_docs(docs, include_live_stats=False)
+        cache_set(cache_key, payload)
+        return public_json_response(payload)
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
@@ -2426,9 +2531,26 @@ def featured_courses(request):
         from categories.models import Category
 
         lite = str(request.GET.get("lite", "")).lower() in ("1", "true", "yes")
+        fallback = str(request.GET.get("fallback", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        limit_param = request.GET.get("limit") or ""
+        cache_key = f"courses_featured:{int(lite)}:{int(fallback)}:{limit_param}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return public_json_response(cached)
+
         if lite:
-            limit = _positive_int_param(request, "limit", 8, 50)
-            return Response(_featured_course_lite_rows(limit))
+            limit = (
+                _positive_int_param(request, "limit", 50, 200)
+                if limit_param
+                else 200
+            )
+            payload = _featured_course_lite_rows(limit)
+            cache_set(cache_key, payload)
+            return public_json_response(payload)
 
         featured = _get_admin_featured_courses()
 
@@ -2439,15 +2561,13 @@ def featured_courses(request):
                 _merge_course_extra_from_doc(item, raw_by_id.get(item.get("id")))
                 for item in serializer.data
             ]
-            return Response(merged)
+            cache_set(cache_key, merged)
+            return public_json_response(merged)
 
-        use_fallback = str(request.GET.get("fallback", "")).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        use_fallback = fallback
         if not use_fallback:
-            return Response([])
+            cache_set(cache_key, [])
+            return public_json_response([])
 
         def _is_top_certification_category(category):
             value = getattr(category, 'is_top_certification', False)
@@ -2481,11 +2601,59 @@ def featured_courses(request):
             _merge_course_extra_from_doc(item, raw_by_id.get(item.get("id")))
             for item in serializer.data
         ]
-        return Response(merged)
+        cache_set(cache_key, merged)
+        return public_json_response(merged)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ------------------------------------------------------------
+# ✅ ADMIN: Bulk set pricing access type for ALL exams
+# ------------------------------------------------------------
+@api_view(['POST'])
+@authenticate
+@restrict(['admin'])
+@csrf_exempt
+def bulk_update_pricing_access(request):
+    """
+    Set pricing_access_type for every course to "free" or "paid".
+    Body: { "pricing_access_type": "free" | "paid" }
+    """
+    try:
+        data = request.data or {}
+        access_type = str(data.get('pricing_access_type') or '').strip().lower()
+        if access_type not in ('free', 'paid'):
+            return Response(
+                {
+                    "success": False,
+                    "error": "pricing_access_type must be 'free' or 'paid'",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = datetime.datetime.utcnow()
+        updated_count = Course.objects.update(
+            set__pricing_access_type=access_type,
+            set__updated_at=now,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": f"Updated {updated_count} exam(s) to {access_type}",
+                "pricing_access_type": access_type,
+                "updated_count": int(updated_count or 0),
+            }
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response(
+            {"success": False, "error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 # ------------------------------------------------------------
